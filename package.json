@@ -1,0 +1,39 @@
+{
+    "name": "libass-webos-legacy",
+    "version": "1.0.0",
+    "description": "A lightweight ASS subtitle rendering pipeline for legacy LG webOS browsers, built around libass with event-driven caching and performance-focused scheduling.",
+    "scripts": {
+        "lint": "npx eslint --ext .js ./src",
+        "test": "echo \"Error: no test specified\" && exit 1"
+    },
+    "engines": {
+        "node": ">=22"
+    },
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/ediaz23/libass-webos-legacy.git"
+    },
+    "keywords": [],
+    "author": "Esteban Díaz <esteban.diazt23@gmail.com>",
+    "license": "Apache-2.0",
+    "type": "module",
+    "bugs": {
+        "url": "https://github.com/ediaz23/libass-webos-legacy/issues"
+    },
+    "homepage": "https://github.com/ediaz23/libass-webos-legacy#readme",
+    "dependencies": {
+        "@babel/runtime": "^7.27.6",
+        "event-target-shim": "^6.0.2",
+        "rvfc-legacy-polyfill": "^0.1.0",
+        "webpack-conditional-loader": "^1.0.12"
+    },
+    "devDependencies": {
+        "@eslint/js": "^9.30.1",
+        "@types/node": "^18.19.115",
+        "eslint": "^9.39.4",
+        "eslint-plugin-import": "^2.32.0",
+        "eslint-plugin-n": "^17.21.0",
+        "globals": "^16.3.0",
+        "terser-webpack-plugin": "^5.3.14"
+    }
+}
