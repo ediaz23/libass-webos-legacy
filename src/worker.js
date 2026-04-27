@@ -152,20 +152,18 @@ function destroy () {
 async function addFont ({ name, font }) {
     ensureReady()
 
-    const fontName = name || 'font'
-
     const uint8 = font instanceof Uint8Array ? font : new Uint8Array(font)
     const ptr = state.module._malloc(uint8.byteLength)
 
     state.module.HEAPU8.set(uint8, ptr)
-    state.libass.addFont(fontName, ptr, uint8.byteLength)
+    state.libass.addFont(name, ptr, uint8.byteLength)
     state.libass.reloadFonts()
 }
 
 function setTrack ({ content }) {
     ensureReady()
 
-    state.trackContent = content || ''
+    state.trackContent = content
     state.libass.createTrackMem(state.trackContent)
 }
 
@@ -177,7 +175,7 @@ function removeTrack () {
 
 function setDefaultFont ({ font }) {
     ensureReady()
-    state.fallbackFont = font || ''
+    state.fallbackFont = font
     state.libass.setDefaultFont(state.fallbackFont)
 }
 

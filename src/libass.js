@@ -8,24 +8,71 @@ EventTargetBase = EventTargetShim
 
 import LRUCache from './LRUCache.js'
 
+/**
+ * 
+ */
+
 export default class LibAss extends EventTargetBase {
+    constructor() {
+        super()
+
+        this.debug = false
+        /** @type {Number} */
+        this.timeOffset = 0
+
+        /** @type {HTMLVideoElement} */
+        this._video = null
+        /** @type {HTMLCanvasElement} */
+        this._canvas = null
+        /** @type {HTMLDivElement} */
+        this._canvasParent = null
+        /** @type {CanvasRenderingContext2D} */
+        this._ctx = null
+
+        /** @type {HTMLCanvasElement} */
+        this._bufferCanvas = document.createElement('canvas')
+        /** @type {CanvasRenderingContext2D} */
+        this._bufferCtx = this._bufferCanvas.getContext('2d')
+        if (!this._bufferCtx) {
+            throw new Error('Canvas rendering not supported')
+        }
+
+        /** @type {Worker} */
+        this._worker = null
+        /** @type {Number} */
+        this._reqId = 0
+        this._pending = new Map()
+
+        /** @type {Number} */
+        this._currentTime = 0
+        /** @type {String} */
+        this._lastRenderKey = ''
+        /** @type {Object} */
+        this._lastRendered = null
+        /** @type {number} */
+        this._rvfcHandle = null
+
+        this._plans = []
+
+        /** @type {LRUCache} */
+        this._renderCache = null
+        /** @type {Function} */
+        this._boundResize = this.resize.bind(this)
+        /** @type {Function} */
+        this._boundRVFC = this._handleRVFC.bind(this)
+    }
+
     /**
      * @param {Object} options
      * @param {HTMLVideoElement} [options.video]
      * @param {HTMLCanvasElement} [options.canvas]
-     * @param {'js'|'wasm'} [options.blendMode='js']
-     * @param {String} [options.workerUrl='jassub-worker.js']
-     * @param {String} [options.wasmUrl='jassub.wasm']
-     * @param {String} [options.subUrl]
+     * @param {String} [options.workerUrl='libass-worker.js']
+     * @param {String} [options.wasmUrl='libass.wasm']
      * @param {String} [options.subContent]
-     * @param {String[]|Uint8Array[]} [options.fonts]
-     * @param {Object} [options.availableFonts={'liberation sans': './default.woff2'}]
+     * @param {Array<Uint8Array>} [options.fonts]
      * @param {String} [options.fallbackFont='liberation sans']
      * @param {Number} [options.timeOffset=0]
      * @param {Boolean} [options.debug=false]
-     * @param {Number} [options.prescaleFactor=1.0]
-     * @param {Number} [options.prescaleHeightLimit=1080]
-     * @param {Number} [options.maxRenderHeight=0]
      * @param {Boolean} [options.dropAllAnimations=false]
      * @param {Boolean} [options.dropAllBlur=false]
      * @param {Number} [options.libassMemoryLimit=0]
@@ -33,56 +80,34 @@ export default class LibAss extends EventTargetBase {
      * @param {Number} [options.maxCacheSize=200]
      * @param {Number} [options.maxCacheBytes=0]
      */
-    constructor(options) {
-        super()
-
+    async load (options) {
         if (!options) {
             throw new Error('No options provided')
         }
 
-        this._destroyed = false
-        this._ready = false
-
         this.debug = !!options.debug
         this.timeOffset = options.timeOffset || 0
 
-        this.blendMode = options.blendMode || 'js'
-        this.workerUrl = options.workerUrl || 'jassub-worker.js'
-        this.wasmUrl = options.wasmUrl || 'jassub.wasm'
-
-        this.prescaleFactor = options.prescaleFactor || 1.0
-        this.prescaleHeightLimit = options.prescaleHeightLimit || 1080
-        this.maxRenderHeight = options.maxRenderHeight || 0
-
-        this.dropAllAnimations = !!options.dropAllAnimations
-        this.dropAllBlur = !!options.dropAllBlur
-
-        this.libassMemoryLimit = options.libassMemoryLimit || 0
-        this.libassGlyphLimit = options.libassGlyphLimit || 0
-
-        this._playbackRate = 1
-        this._currentTime = 0
-        this._lastRenderTime = -1
-        this._lastRenderKey = ''
-        this._rvfcHandle = null
-
-        this._video = null
-        this._videoWidth = 0
-        this._videoHeight = 0
-
+        this._video = options.video || null
         this._canvas = options.canvas || null
-        this._canvasParent = null
 
-        if (!this._canvas && options.video) {
-            this._video = options.video
+        this._renderCache = new LRUCache({
+            maxSize: options.maxCacheSize || 300,
+            maxBytes: options.maxCacheBytes || 0,
+            size: function (value) {
+                return value && value.bytes ? value.bytes : 1
+            }
+        })
+
+        if (!this._canvas && this._video) {
             this._canvasParent = document.createElement('div')
             this._canvasParent.className = 'LibAss'
             this._canvasParent.style.position = 'relative'
             this._canvas = this._createCanvas()
             this._video.insertAdjacentElement('afterend', this._canvasParent)
-        } else if (this._canvas) {
-            this._video = options.video || null
-        } else {
+        }
+
+        if (!this._canvas) {
             throw new Error('You should give video or canvas in options.')
         }
 
@@ -91,48 +116,30 @@ export default class LibAss extends EventTargetBase {
             throw new Error('Canvas rendering not supported')
         }
 
-        this._bufferCanvas = document.createElement('canvas')
-        this._bufferCtx = this._bufferCanvas.getContext('2d')
-        if (!this._bufferCtx) {
-            throw new Error('Canvas rendering not supported')
-        }
+        this._worker = new Worker(options.workerUrl || 'libass-worker.js')
+        this._worker.onmessage = this._handleWorkerMessage.bind(this)
+        this._worker.onerror = this._handleWorkerError.bind(this)
 
-        this._events = []
-
-        this._boundResize = this.resize.bind(this)
-        this._boundSetRate = this.setRate.bind(this)
-        this._boundRVFC = this._handleRVFC.bind(this)
-
-        this._renderCache = new LRUCache({
-            maxSize: options.maxCacheSize || 200,
-            maxBytes: options.maxCacheBytes || 0,
-            size: function (value) {
-                return value && value.bytes ? value.bytes : 1
-            },
-            onEviction: function (_key, value) {
-                if (value && value.image && typeof value.image.close === 'function') {
-                    value.image.close()
-                }
-            }
+        await this._callWorker('init', {
+            width: this._canvas.width || 0,
+            height: this._canvas.height || 0,
+            debug: this.debug,
+            subContent: options.subContent || null,
+            fallbackFont: options.fallbackFont || '',
+            fonts: options.fonts || [],
+            wasmUrl: options.wasmUrl || 'libass.wasm',
+            libassMemoryLimit: options.libassMemoryLimit || 0,
+            libassGlyphLimit: options.libassGlyphLimit || 0,
         })
 
-        if (options.fonts && options.fonts.length) {
-            for (var i = 0; i < options.fonts.length; i++) {
-                this.addFont(options.fonts[i])
-            }
-        }
-
         if (this._video) {
-            this.setVideo(this._video)
+            await this.setVideo(this._video)
         }
 
         if (options.subContent) {
-            this.setTrack(options.subContent)
-        } else if (options.subUrl) {
-            this.setTrackByUrl(options.subUrl)
+            await this.buildPlans()
+            await this._warmInitialBuffer()
         }
-
-        this._ready = true
         this.dispatchEvent(new CustomEvent('ready'))
     }
 
@@ -145,38 +152,48 @@ export default class LibAss extends EventTargetBase {
         return this._canvas
     }
 
-    async setNewContext (context) {
-        if (this._destroyed) {
-            throw new Error('Instance destroyed')
-        }
+    _handleWorkerMessage (event) {
+        const data = event.data
+        const pending = this._pending.get(data.id)
 
-        if (context.video && context.video !== this._video) {
-            if (this._canvasParent) {
-                context.video.insertAdjacentElement('afterend', this._canvasParent)
+        this._pending.delete(data.id)
+        if (pending) {
+            if (data.error) {
+                const error = new Error(data.error)
+                error.stack = data.stack || null
+                pending.reject(error)
+            } else {
+                pending.resolve(data)
             }
-            this._videoWidth = 0
-            this._videoHeight = 0
-            this.setVideo(context.video)
-        }
-
-        if (typeof context.subContent === 'string') {
-            this.setTrack(context.subContent)
         }
     }
 
-    setVideo (video) {
-        if (!(video instanceof HTMLVideoElement)) {
-            throw new Error('Video element invalid!')
-        }
+    _handleWorkerError (error) {
+        this._pending.forEach((pending) => {
+            pending.reject(error)
+        })
+        this._pending.clear()
+    }
 
+    _callWorker (target, payload) {
+        const id = ++this._reqId
+
+        return new Promise((resolve, reject) => {
+            this._pending.set(id, { resolve, reject })
+            this._worker.postMessage(Object.assign({ id, target }, payload || {}))
+        })
+    }
+
+    /**
+     * @param {HTMLVideoElement} video 
+     */
+    async setVideo (video) {
         this._removeListeners()
         this._video = video
 
         if (typeof video.requestVideoFrameCallback === 'function') {
             this._rvfcHandle = video.requestVideoFrameCallback(this._boundRVFC)
         }
-
-        video.addEventListener('ratechange', this._boundSetRate, false)
 
         if (typeof ResizeObserver !== 'undefined') {
             if (!this._ro) {
@@ -186,63 +203,30 @@ export default class LibAss extends EventTargetBase {
         }
 
         if (video.videoWidth > 0) {
-            this.resize()
+            await this.resize()
         }
     }
 
-    _handleRVFC (_now, metadata) {
-        if (this._destroyed || !this._video) {
-            return
+    async _handleRVFC (_now, metadata) {
+        if (this._video) {
+            await this.render(
+                metadata ? metadata.mediaTime + this.timeOffset : this._video.currentTime + this.timeOffset
+            )
+            this._rvfcHandle = this._video.requestVideoFrameCallback(this._boundRVFC)
         }
-
-        if (metadata) {
-            if (metadata.width !== this._videoWidth || metadata.height !== this._videoHeight) {
-                this._videoWidth = metadata.width
-                this._videoHeight = metadata.height
-                this.resize()
-            }
-
-            this.render(metadata.mediaTime + this.timeOffset)
-        } else {
-            this.render(this._video.currentTime + this.timeOffset)
-        }
-
-        this._rvfcHandle = this._video.requestVideoFrameCallback(this._boundRVFC)
     }
 
-    resize (width, height, top, left) {
+    async resize (width, height, top, left) {
         if (!width || !height) {
             if (!this._video) {
                 return
             }
 
-            var videoSize = this._getVideoPosition()
-            var renderSize
-
-            if (this._videoWidth) {
-                var widthRatio = this._video.videoWidth / this._videoWidth
-                var heightRatio = this._video.videoHeight / this._videoHeight
-                renderSize = this._computeCanvasSize(
-                    (videoSize.width || 0) / widthRatio,
-                    (videoSize.height || 0) / heightRatio
-                )
-            } else {
-                renderSize = this._computeCanvasSize(videoSize.width || 0, videoSize.height || 0)
-            }
-
-            width = renderSize.width
-            height = renderSize.height
-
-            if (this._canvasParent) {
-                top = videoSize.y - (this._canvasParent.getBoundingClientRect().top - this._video.getBoundingClientRect().top)
-                left = videoSize.x
-            } else {
-                top = 0
-                left = 0
-            }
-
-            this._canvas.style.width = videoSize.width + 'px'
-            this._canvas.style.height = videoSize.height + 'px'
+            const rect = this._getVideoPosition()
+            width = rect.width || 0
+            height = rect.height || 0
+            top = rect.y
+            left = rect.x
         }
 
         this._canvas.style.top = (top || 0) + 'px'
@@ -251,19 +235,24 @@ export default class LibAss extends EventTargetBase {
         if (this._canvas.width !== width) {
             this._canvas.width = width
         }
+
         if (this._canvas.height !== height) {
             this._canvas.height = height
         }
+
+        await this._callWorker('resize', { width: this._canvas.width, height: this._canvas.height })
+
+        this.clearCache()
     }
 
     _getVideoPosition (width, height) {
         width = width || this._video.videoWidth
         height = height || this._video.videoHeight
 
-        var videoRatio = width / height
-        var offsetWidth = this._video.offsetWidth
-        var offsetHeight = this._video.offsetHeight
-        var elementRatio = offsetWidth / offsetHeight
+        const videoRatio = width / height
+        const offsetWidth = this._video.offsetWidth
+        const offsetHeight = this._video.offsetHeight
+        const elementRatio = offsetWidth / offsetHeight
 
         width = offsetWidth
         height = offsetHeight
@@ -274,263 +263,316 @@ export default class LibAss extends EventTargetBase {
             height = Math.floor(offsetWidth / videoRatio)
         }
 
-        var x = (offsetWidth - width) / 2
-        var y = (offsetHeight - height) / 2
+        const x = (offsetWidth - width) / 2
+        const y = (offsetHeight - height) / 2
 
-        return { width: width, height: height, x: x, y: y }
+        return { width, height, x, y }
     }
 
-    _computeCanvasSize (width, height) {
-        var scalefactor = this.prescaleFactor <= 0 ? 1.0 : this.prescaleFactor
-        var ratio = self.devicePixelRatio || 1
-
-        if (height <= 0 || width <= 0) {
-            width = 0
-            height = 0
-        } else {
-            var sgn = scalefactor < 1 ? -1 : 1
-            var newH = height * ratio
-
-            if (sgn * newH * scalefactor <= sgn * this.prescaleHeightLimit) {
-                newH *= scalefactor
-            } else if (sgn * newH < sgn * this.prescaleHeightLimit) {
-                newH = this.prescaleHeightLimit
-            }
-
-            if (this.maxRenderHeight > 0 && newH > this.maxRenderHeight) {
-                newH = this.maxRenderHeight
-            }
-
-            width *= newH / height
-            height = newH
-        }
-
-        return { width: width, height: height }
+    async setTrack (content) {
+        await this._callWorker('setTrack', { content })
+        await this.buildPlans()
+        await this._warmInitialBuffer()
+        this.dispatchEvent(new CustomEvent('ready'))
     }
 
-    runBenchmark () {
-        return {
-            classification: this._classification,
-            cache: this.getCacheStats(),
-            events: this._events.length,
-            styles: this._styles.length
-        }
-    }
-
-    setTrackByUrl (url) {
-        this._track = { type: 'url', value: url }
-        this._trackMeta = { source: 'url', url: url }
-        this._invalidateTrackState()
-        this._classifyTrack()
-    }
-
-    setTrack (content) {
-        this._track = { type: 'content', value: content }
-        this._trackMeta = {
-            source: 'content',
-            length: content ? content.length : 0
-        }
-        this._invalidateTrackState()
-        this._classifyTrack()
-    }
-
-    freeTrack () {
-        this._track = null
-        this._trackMeta = null
-        this._events = []
-        this._styles = []
-        this._styleOverride = null
-        this._classification = null
+    async removeTrack () {
+        await this._callWorker('removeTrack')
+        this._plans = []
         this.clearCache()
         this._clearCanvas()
     }
 
-    setRate (rate) {
-        if (typeof rate === 'number' && isFinite(rate)) {
-            this._playbackRate = rate
-        } else if (this._video) {
-            this._playbackRate = this._video.playbackRate || 1
+    async addFont (name, font) {
+        await this._callWorker('addFont', { name, font })
+    }
+
+    async setDefaultFont (font) {
+        await this._callWorker('setDefaultFont', { font })
+    }
+
+    async createStyle (style) {
+        return this._callWorker('createStyle', { style })
+    }
+
+    async getStyles () {
+        return await this._callWorker('getStyles')
+    }
+
+    async removeStyle (index) {
+        await this._callWorker('removeStyle', { index })
+    }
+
+    async setStyleOverride (index) {
+        await this._callWorker('setStyleOverride', { index })
+    }
+
+    async removeStyleOverride () {
+        await this._callWorker('removeStyleOverride')
+    }
+
+    async createEvent (event) {
+        return await this._callWorker('createEvent', { event })
+    }
+
+    async getEvents () {
+        return await this._callWorker('getEvents')
+    }
+
+    async removeEvent (index) {
+        await this._callWorker('removeEvent', { index })
+    }
+
+    async buildPlans () {
+        this.clearCache()
+        const { events } = await this._callWorker('getEvents')
+        this._plans = []
+
+        for (let i = 0; i < events.length; i++) {
+            const event = events[i]
+            const start = (event.Start || 0) / 100
+            const duration = (event.Duration || 0) / 100
+            const end = start + duration
+            const text = event.Text || ''
+            const effect = event.Effect || ''
+
+            const hasPosition = /\\pos\s*\(|\\move\s*\(|\\org\s*\(/.test(text)
+            const heavy = /\\t\s*\(|\\p\d+|\\blur\d+|\\be\d+|\\k\d+|\\K\d+|\\kf\d+|\\ko\d+/.test(text) || !!effect
+
+            let type = 1
+            if (heavy) {
+                type = 3
+            } else if (hasPosition) {
+                type = 2
+            }
+
+            this._plans.push({ type, start, end, samples: this._buildSamples(type, start, end) })
         }
     }
 
-    setCurrentTime (currentTime, rate) {
-        if (typeof currentTime === 'number' && isFinite(currentTime)) {
-            this._currentTime = currentTime
+    _buildSamples (type, start, end) {
+        const out = []
+        if (type === 1) {
+            out.push(start)
+        } else {
+            // generate samples
+            // type=2 between 3 and 6 samples
+            // type=3 between 6 and 16 samples
+            const duration = Math.max(end - start, 0)
+            const count = type === 2
+                ? Math.max(3, Math.min(6, Math.ceil(duration * 2)))
+                : Math.max(6, Math.min(16, Math.ceil(duration * 6)))
+
+            if (count <= 1 || end <= start) {
+                out.push(start)
+            } else {
+                const step = (end - start) / (count - 1)
+
+                for (let i = 0; i < count; i++) {
+                    out.push(Math.round((start + (step * i)) * 1000) / 1000)
+                }
+            }
         }
-        if (typeof rate === 'number' && isFinite(rate)) {
-            this._playbackRate = rate
+
+        return out
+    }
+
+    _resolvePlannedTime (time) {
+        let planned = Math.round(time * 1000) / 1000
+
+        for (let i = 0; i < this._plans.length; i++) {
+            const plan = this._plans[i]
+
+            if (time < plan.start || time > plan.end) {
+                continue
+            }
+
+            let candidate = plan.samples[0]
+
+            for (let j = 0; j < plan.samples.length; j++) {
+                if (plan.samples[j] <= time) {
+                    candidate = plan.samples[j]
+                } else {
+                    break
+                }
+            }
+
+            if (candidate > planned) {
+                planned = candidate
+            }
+        }
+
+        return planned
+    }
+
+    _buildRenderCacheKey (time) {
+        return [
+            Math.round(time * 1000),
+            this._canvas.width,
+            this._canvas.height,
+        ].join(':')
+    }
+
+    async _renderAt (time, force) {
+        const res = await this._callWorker('render', { time, force: !!force })
+
+        let bytes = 0
+        const images = res.images || []
+
+        for (let i = 0; i < images.length; i++) {
+            bytes += images[i].image ? images[i].image.byteLength || 0 : 0
+        }
+
+        return {
+            changed: !!res.changed,
+            time: res.time,
+            width: res.width,
+            height: res.height,
+            duration: res.duration,
+            images,
+            bytes: bytes || 1
         }
     }
 
-    render (time) {
-        if (this._destroyed) {
-            return null
+    async _ensureCached (time) {
+        const key = this._buildRenderCacheKey(time)
+        const cached = this._renderCache.get(key)
+
+        if (cached) {
+            return cached
         }
 
+        const rendered = await this._renderAt(time, false)
+        this._renderCache.set(key, rendered)
+        return rendered
+    }
+
+    async _warmInitialBuffer () {
+        const current = this._video ? this._video.currentTime + this.timeOffset : 0
+        const targets = []
+
+        for (let i = 0; i < this._plans.length && targets.length < 12; i++) {
+            const samples = this._plans[i].samples
+            for (let j = 0; j < samples.length && targets.length < 12; j++) {
+                if (samples[j] >= current) {
+                    targets.push(samples[j])
+                }
+            }
+        }
+
+        for (let i = 0; i < targets.length; i++) {
+            await this._ensureCached(targets[i])
+        }
+    }
+
+    async _preloadAhead (time) {
+        const targets = [time]
+        let count = 0
+
+        for (let i = 0; i < this._plans.length && count < 8; i++) {
+            const samples = this._plans[i].samples
+            for (let j = 0; j < samples.length && count < 8; j++) {
+                if (samples[j] > time) {
+                    targets.push(samples[j])
+                    count += 1
+                }
+            }
+        }
+
+        for (let i = 0; i < targets.length; i++) {
+            await this._ensureCached(targets[i])
+        }
+    }
+
+    async render (time) {
         if (typeof time !== 'number' || !isFinite(time)) {
             time = this._video ? this._video.currentTime + this.timeOffset : this._currentTime
         }
 
         this._currentTime = time
 
-        var width = this._canvas.width
-        var height = this._canvas.height
-        var key = this._buildRenderCacheKey(time, width, height)
+        const plannedTime = this._resolvePlannedTime(time)
+        const key = this._buildRenderCacheKey(plannedTime)
+        let result
+        if (this._lastRenderKey === key && this._lastRendered) {
+            this._drawRenderResult(this._lastRendered)
+            result = this._lastRendered
+        } else {
+            result = this._renderCache.get(key)
+            if (!result) {
+                const wasPlaying = !!(this._video && !this._video.paused)
 
-        if (this._lastRenderKey === key) {
-            return this._renderCache.peek(key) || null
-        }
+                if (wasPlaying) {
+                    this.dispatchEvent(new CustomEvent('loading'))
+                }
 
-        var cached = this._renderCache.get(key)
-        if (cached) {
-            this._drawRenderResult(cached)
+                await this._preloadAhead(plannedTime)
+                result = this._renderCache.get(key)
+
+                if (!result) {
+                    result = await this._ensureCached(plannedTime)
+                }
+
+                if (wasPlaying) {
+                    this.dispatchEvent(new CustomEvent('ready'))
+                }
+            }
+
+            this._drawRenderResult(result)
             this._lastRenderKey = key
-            this._lastRenderTime = time
-            return cached
+            this._lastRendered = result
         }
-
-        var result = this._renderAtTime(time, width, height)
-        this._drawRenderResult(result)
-        this._renderCache.set(key, result)
-        this._lastRenderKey = key
-        this._lastRenderTime = time
 
         return result
     }
 
-    renderAt (time) {
-        return this.render(time)
-    }
+    _drawRenderResult (result) {
+        this._clearCanvas()
 
-    preloadRange (start, end, step) {
-        if (typeof step !== 'number' || step <= 0) {
-            step = 1 / 12
-        }
-
-        for (var t = start; t <= end; t += step) {
-            this.render(t)
-        }
-    }
-
-    createEvent (event) {
-        var normalized = this._normalizeEvent(event)
-        normalized._index = this._events.length
-        this._events.push(normalized)
-        this._invalidateRenderCache()
-    }
-
-    setEvent (event, index) {
-        if (index < 0 || index >= this._events.length) {
+        if (!result || !result.images || !result.images.length) {
             return
         }
 
-        var normalized = this._normalizeEvent(event)
-        normalized._index = index
-        this._events[index] = normalized
-        this._invalidateRenderCache()
-    }
+        for (let i = 0; i < result.images.length; i++) {
+            const image = result.images[i]
 
-    removeEvent (index) {
-        if (index < 0 || index >= this._events.length) {
-            return
+            if (!image || !image.image) {
+                continue
+            }
+
+            const pixels = image.image instanceof Uint8Array
+                ? image.image
+                : new Uint8Array(image.image)
+
+            this._bufferCanvas.width = image.w
+            this._bufferCanvas.height = image.h
+
+            this._bufferCtx.putImageData(
+                new ImageData(
+                    new Uint8ClampedArray(
+                        pixels.buffer,
+                        pixels.byteOffset,
+                        pixels.byteLength
+                    ),
+                    image.w,
+                    image.h
+                ),
+                0,
+                0
+            )
+
+            this._ctx.drawImage(this._bufferCanvas, image.x, image.y)
         }
-
-        this._events.splice(index, 1)
-        this._reindexEvents()
-        this._invalidateRenderCache()
     }
 
-    removeAllEvents () {
-        this._events = []
-        this._invalidateRenderCache()
-    }
-
-    getEvents (callback) {
-        var events = this._cloneArray(this._events)
-        if (typeof callback === 'function') {
-            callback(null, events)
-        }
-        return events
-    }
-
-    setStyleOverride (style) {
-        this._styleOverride = this._normalizeStyle(style)
-        this._invalidateRenderCache()
-    }
-
-    styleOverride (style) {
-        this.setStyleOverride(style)
-    }
-
-    disableStyleOverride () {
-        this._styleOverride = null
-        this._invalidateRenderCache()
-    }
-
-    createStyle (style) {
-        this._styles.push(this._normalizeStyle(style))
-        this._invalidateRenderCache()
-    }
-
-    setStyle (style, index) {
-        if (index < 0 || index >= this._styles.length) {
-            return
-        }
-
-        this._styles[index] = this._normalizeStyle(style)
-        this._invalidateRenderCache()
-    }
-
-    removeStyle (index) {
-        if (index < 0 || index >= this._styles.length) {
-            return
-        }
-
-        this._styles.splice(index, 1)
-        this._invalidateRenderCache()
-    }
-
-    removeAllStyles () {
-        this._styles = []
-        this._invalidateRenderCache()
-    }
-
-    getStyles (callback) {
-        var styles = this._cloneArray(this._styles)
-        if (typeof callback === 'function') {
-            callback(null, styles)
-        }
-        return styles
-    }
-
-    addFont (font) {
-        this._fonts.push(font)
-    }
-
-    setDefaultFont (font) {
-        this._fallbackFont = font
-        this._invalidateRenderCache()
-    }
-
-    classifyTrack () {
-        return this._classifyTrack()
-    }
-
-    getTrackInfo () {
-        return {
-            track: this._trackMeta,
-            classification: this._classification,
-            events: this._events.length,
-            styles: this._styles.length,
-            fonts: this._fonts.length,
-            fallbackFont: this._fallbackFont
-        }
+    _clearCanvas () {
+        this._ctx.clearRect(0, 0, this._canvas.width, this._canvas.height)
     }
 
     clearCache () {
         this._renderCache.clear()
         this._lastRenderKey = ''
-        this._lastRenderTime = -1
+        this._lastRendered = null
     }
 
     getCacheStats () {
@@ -540,179 +582,13 @@ export default class LibAss extends EventTargetBase {
         }
     }
 
-    _invalidateTrackState () {
-        this._events = []
-        this._styles = []
-        this._styleOverride = null
-        this.clearCache()
-    }
-
-    _invalidateRenderCache () {
-        this.clearCache()
-    }
-
-    _classifyTrack () {
-        var value = this._track && this._track.value ? this._track.value : ''
-        var flags = {
-            hasAnimations: /\\t\s*\(/.test(value),
-            hasBlur: /\\blur\d+|\\be\d+/i.test(value),
-            hasPositioning: /\\pos\s*\(|\\move\s*\(|\\org\s*\(/.test(value),
-            hasVector: /\\p\d+/.test(value),
-            hasManyEvents: this._events.length > 200
-        }
-
-        var level = 'light'
-        if (flags.hasVector || flags.hasAnimations || flags.hasBlur || flags.hasManyEvents) {
-            level = 'heavy'
-        } else if (flags.hasPositioning) {
-            level = 'medium'
-        }
-
-        this._classification = {
-            level: level,
-            flags: flags
-        }
-
-        return this._classification
-    }
-
-    _normalizeEvent (event) {
-        event = event || {}
-
-        return {
-            Start: event.Start || 0,
-            Duration: event.Duration || 0,
-            Style: event.Style || 'Default',
-            Name: event.Name || '',
-            MarginL: event.MarginL || 0,
-            MarginR: event.MarginR || 0,
-            MarginV: event.MarginV || 0,
-            Effect: event.Effect || '',
-            Text: event.Text || '',
-            ReadOrder: event.ReadOrder || 0,
-            Layer: event.Layer || 0,
-            _index: typeof event._index === 'number' ? event._index : -1
-        }
-    }
-
-    _normalizeStyle (style) {
-        style = style || {}
-
-        return {
-            Name: style.Name || 'Default',
-            FontName: style.FontName || this._fallbackFont,
-            FontSize: style.FontSize || 16,
-            PrimaryColour: style.PrimaryColour || 0x00ffffff,
-            SecondaryColour: style.SecondaryColour || 0x00ffffff,
-            OutlineColour: style.OutlineColour || 0x00000000,
-            BackColour: style.BackColour || 0x00000000,
-            Bold: style.Bold || 0,
-            Italic: style.Italic || 0,
-            Underline: style.Underline || 0,
-            StrikeOut: style.StrikeOut || 0,
-            ScaleX: style.ScaleX || 100,
-            ScaleY: style.ScaleY || 100,
-            Spacing: style.Spacing || 0,
-            Angle: style.Angle || 0,
-            BorderStyle: style.BorderStyle || 1,
-            Outline: style.Outline || 0,
-            Shadow: style.Shadow || 0,
-            Alignment: style.Alignment || 2,
-            MarginL: style.MarginL || 0,
-            MarginR: style.MarginR || 0,
-            MarginV: style.MarginV || 0,
-            Encoding: style.Encoding || 0,
-            treat_fontname_as_pattern: style.treat_fontname_as_pattern || 0,
-            Blur: style.Blur || 0,
-            Justify: style.Justify || 0
-        }
-    }
-
-    _reindexEvents () {
-        for (var i = 0; i < this._events.length; i++) {
-            this._events[i]._index = i
-        }
-    }
-
-    _buildRenderCacheKey (time, width, height) {
-        var timeBucket = Math.round(time * 1000)
-        var classification = this._classification ? this._classification.level : 'none'
-        return [
-            timeBucket,
-            width,
-            height,
-            this._events.length,
-            this._styles.length,
-            classification,
-            this.blendMode,
-            this.dropAllAnimations ? 1 : 0,
-            this.dropAllBlur ? 1 : 0,
-            this._styleOverride ? 1 : 0
-        ].join(':')
-    }
-
-    _renderAtTime (time, width, height) {
-        var activeEvents = this._getActiveEvents(time)
-
-        return {
-            time: time,
-            width: width,
-            height: height,
-            images: [],
-            events: activeEvents,
-            bytes: activeEvents.length || 1
-        }
-    }
-
-    _getActiveEvents (time) {
-        var active = []
-
-        for (var i = 0; i < this._events.length; i++) {
-            var event = this._events[i]
-            var start = event.Start / 100
-            var end = start + (event.Duration / 100)
-
-            if (time >= start && time <= end) {
-                active.push(event)
-            }
-        }
-
-        return active
-    }
-
-    _drawRenderResult (result) {
-        this._clearCanvas()
-
-        if (this.debug && result && result.events) {
-            for (var i = 0; i < result.events.length; i++) {
-                var event = result.events[i]
-                if (event && event.Text) {
-                    console.log('[render]', result.time, event.Text)
-                }
-            }
-        }
-    }
-
-    _clearCanvas () {
-        this._ctx.clearRect(0, 0, this._canvas.width, this._canvas.height)
-    }
-
-    _cloneArray (arr) {
-        return JSON.parse(JSON.stringify(arr))
-    }
-
     _removeListeners () {
-        if (this._video) {
-            if (this._ro) {
-                this._ro.unobserve(this._video)
-            }
-            this._video.removeEventListener('ratechange', this._boundSetRate)
+        if (this._video && this._ro) {
+            this._ro.unobserve(this._video)
         }
     }
 
-    destroy () {
-        this._destroyed = true
-
+    async destroy () {
         if (this._video && typeof this._video.cancelVideoFrameCallback === 'function' && this._rvfcHandle != null) {
             this._video.cancelVideoFrameCallback(this._rvfcHandle)
         }
@@ -720,8 +596,19 @@ export default class LibAss extends EventTargetBase {
         this._removeListeners()
         this.clearCache()
 
-        if (this._video && this._canvasParent) {
-            this._video.parentNode && this._video.parentNode.removeChild(this._canvasParent)
+        if (this._worker) {
+            try {
+                await this._callWorker('destroy')
+            } catch (_e) {
+                // nada
+            }
+            this._worker.terminate()
+            this._worker = null
         }
+
+        if (this._video && this._canvasParent && this._video.parentNode) {
+            this._video.parentNode.removeChild(this._canvasParent)
+        }
+        this.dispatchEvent(new CustomEvent('destroy'))
     }
 }
