@@ -29,14 +29,20 @@ image_exists () {
 build_image () {
     local image="$1"
     local emsdk="$2"
-    local no_cache="$3"
     echo "==> Building Docker image ${image} (emsdk ${emsdk})"
     docker buildx build \
         -t "$image" \
         --build-arg "EMSDK_VERSION=${emsdk}" \
-        ${no_cache} \
         --network=host \
         .
+}
+
+ensure_image () {
+    local image="$1"
+    local emsdk="$2"
+    if ! image_exists "$image"; then
+        build_image "$image" "$emsdk"
+    fi
 }
 
 compile () {
@@ -58,18 +64,16 @@ build_target () {
         emsdk=4.0.13
     else
         image=libass-webos-legacy-old
-        emsdk=3.1.73
+        emsdk=3.1.40
     fi
 
+    ensure_image "$image" "$emsdk"
+
+    local pre=""
     if [[ "$MODE" == "full" ]]; then
-        build_image "$image" "$emsdk" "--no-cache"
-        compile "$image" "$target" "make clean-libs && "
-    else
-        if ! image_exists "$image"; then
-            build_image "$image" "$emsdk" ""
-        fi
-        compile "$image" "$target" ""
+        pre="make clean-libs && "
     fi
+    compile "$image" "$target" "$pre"
 
     echo "==> Bundling JS (webpack, ${target})"
     npm run "webpack-${target}"

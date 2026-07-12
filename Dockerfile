@@ -1,5 +1,5 @@
-# 4.0.13 -> chrome 55 (modern target: webOS 4/5, Chromium 68)
-# 3.1.73 -> chrome 38 (legacy target: webOS 3,   Chromium 38)
+# 4.0.13 -> supports chrome >= 55 (modern target: webOS 4/5, Chromium 68)
+# 3.1.40 -> supports chrome >= 38 (legacy target: webOS 3,   Chromium 38)
 ARG EMSDK_VERSION=4.0.13
 FROM emscripten/emsdk:${EMSDK_VERSION}
 

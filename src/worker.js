@@ -5,41 +5,24 @@ import _LibassModuleFactory from 'wasm'
 LibassModuleFactory = _LibassModuleFactory
 // #endif
 
-function readSync (url, asArrayBuffer) {
-    const xhr = new XMLHttpRequest()
-    xhr.open('GET', url, false)
-    xhr.responseType = asArrayBuffer ? 'arraybuffer' : 'text'
-    xhr.send(null)
-    return xhr.response
-}
+async function loadModule (data) {
+    let module
+    // #if process.env.JAS_TARGER === 'modern'
+    module = await LibassModuleFactory({ wasm: data.wasmBinary })
+    // #endif
+    // #if process.env.JAS_TARGER === 'legacy'
+    module = (function () {
+        let _malloc, _free, _fflush;
 
-function supportsWasm () {
-    let ok = false
-    try {
-        const test = new WebAssembly.Module(Uint8Array.of(0x0, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00))
-        ok = (test instanceof WebAssembly.Module) &&
-             (new WebAssembly.Instance(test) instanceof WebAssembly.Instance)
-    } catch (_e) {
-        ok = false
-    }
-    return ok
-}
-
-function bootstrapModule (data) {
-    let result
-    if (supportsWasm()) {
-        const wasmBinary = data.wasmBinary || (data.wasmUrl ? readSync(data.wasmUrl, true) : null)
-        result = LibassModuleFactory({ wasm: wasmBinary })
-    } else {
-        Object.assign(LibassModuleFactory, (function () {
-            const Module = {}
-            // eslint-disable-next-line no-eval
-            eval(readSync(data.legacyWasmUrl, false))
-            return Module
-        })())
-        result = Promise.resolve(LibassModuleFactory)
-    }
-    return result
+        const xhr = new XMLHttpRequest()
+        xhr.open('GET', data.legacyWasmUrl, false)
+        xhr.responseType = 'text'
+        xhr.send(null)
+        eval(xhr.response)
+        return { _malloc, _free, _fflush, }
+    })()
+    // #endif
+    return module
 }
 
 const state = {
@@ -83,7 +66,7 @@ async function init (data) {
     state.trackContent = data.subContent || ''
     state.fonts = Array.isArray(data.fonts) ? data.fonts.slice() : []
 
-    const module = await bootstrapModule(data)
+    const module = await loadModule(data)
 
     state.module = module
     state.libass = new module.LibassBridge(
@@ -115,7 +98,7 @@ function render ({ time, force }) {
     ensureReady()
 
     const startedAt = state.debug ? performance.now() : 0
-    const head = state.libass.renderImage(time, force ? 1 : 0)
+    const head = state.libass.renderImage(time)
     const changed = !!force || state.libass.getLastChange() !== 0
     const images = []
 
@@ -194,7 +177,6 @@ async function addFont ({ name, font }) {
 
     state.module.HEAPU8.set(uint8, ptr)
     state.libass.addFont(name, ptr, uint8.byteLength)
-    state.libass.reloadFonts()
 }
 
 function setTrack ({ content }) {

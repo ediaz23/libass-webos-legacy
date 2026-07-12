@@ -1,22 +1,18 @@
 CMAKE := /usr/bin/cmake
 BUILD_DIR := build
 
-.PHONY: all modern legacy debug release clean clean-libs clean-js rebuild
+.PHONY: modern legacy configure-release configure-debug clean clean-libs clean-js rebuild
 
-all: release
+configure-release:
+	$(CMAKE) -S . -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=Release
 
-release:
-	$(CMAKE) -S . -B $(BUILD_DIR) -D$(CMAKE)_BUILD_TYPE=Release
-	$(CMAKE) --build $(BUILD_DIR) -j
+configure-debug:
+	$(CMAKE) -S . -B $(BUILD_DIR) -DCMAKE_BUILD_TYPE=Debug
 
-debug:
-	$(CMAKE) -S . -B $(BUILD_DIR) -D$(CMAKE)_BUILD_TYPE=Debug
-	$(CMAKE) --build $(BUILD_DIR) -j
-
-modern: release
+modern: configure-release
 	$(CMAKE) --build $(BUILD_DIR) --target libass_modern_min libass_modern_debug -j
 
-legacy: release
+legacy: configure-release
 	$(CMAKE) --build $(BUILD_DIR) --target libass_legacy_min libass_legacy_debug -j
 
 clean:
@@ -32,4 +28,5 @@ clean-libs:
 clean-js:
 	rm -rf build/js
 
-rebuild: clean all
+rebuild-modern: clean modern
+rebuild-legacy: clean legacy

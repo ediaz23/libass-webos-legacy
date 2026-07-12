@@ -24,6 +24,35 @@ find_program(MESON_EXECUTABLE meson REQUIRED)
 find_program(NINJA_EXECUTABLE ninja REQUIRED)
 find_program(EMCC_EXECUTABLE emcc REQUIRED)
 
+# ===== Emscripten toolchain detection =====
+if(NOT DEFINED ENV{EMSDK})
+    message(FATAL_ERROR "EMSDK env var not set. This project must be built inside the emscripten/emsdk container.")
+endif()
+
+set(EMSCRIPTEN_CMAKE_TOOLCHAIN "$ENV{EMSDK}/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake")
+if(NOT EXISTS "${EMSCRIPTEN_CMAKE_TOOLCHAIN}")
+    message(FATAL_ERROR "Emscripten CMake toolchain not found at: ${EMSCRIPTEN_CMAKE_TOOLCHAIN}")
+endif()
+
+# Meson cross-file so all meson-based deps (fribidi, freetype, harfbuzz, libass)
+# emit wasm object files instead of native x86.
+set(MESON_CROSS_FILE "${CMAKE_BINARY_DIR}/emscripten-cross.ini")
+file(WRITE "${MESON_CROSS_FILE}"
+"[binaries]
+c = 'emcc'
+cpp = 'em++'
+ar = 'emar'
+ranlib = 'emranlib'
+strip = 'emstrip'
+pkgconfig = 'pkg-config'
+
+[host_machine]
+system = 'emscripten'
+cpu_family = 'wasm32'
+cpu = 'wasm32'
+endian = 'little'
+")
+
 # ===== Common env =====
 set(_env
     "PKG_CONFIG_PATH=${PREFIX_DIR}/lib/pkgconfig:${PREFIX_DIR}/lib64/pkgconfig"
@@ -46,6 +75,7 @@ function(ep_meson name srcdir)
             COMMAND ${CMAKE_COMMAND} -E make_directory "${_build_subdir}"
             COMMAND ${CMAKE_COMMAND} -E env ${_env}
                             ${MESON_EXECUTABLE} setup "${_build_subdir}" "${srcdir}"
+                                --cross-file "${MESON_CROSS_FILE}"
                                 --prefix "${PREFIX_DIR}"
                                 --libdir "lib"
                                 --default-library=static
@@ -68,6 +98,7 @@ function(ep_cmake name srcdir)
         SOURCE_DIR "${srcdir}"
         BINARY_DIR "${SUPERBUILD_DIR}/${name}"
         CMAKE_ARGS
+            -DCMAKE_TOOLCHAIN_FILE=${EMSCRIPTEN_CMAKE_TOOLCHAIN}
             -DCMAKE_INSTALL_PREFIX=${PREFIX_DIR}
             -DBUILD_SHARED_LIBS=OFF
             -DCMAKE_POSITION_INDEPENDENT_CODE=ON
@@ -168,7 +199,6 @@ set(PERFORMANCE_ARGS
     -s TEXTDECODER=1
     -s MINIMAL_RUNTIME_STREAMING_WASM_INSTANTIATION=1
     --no-heap-copy
-    -flto
     -fno-exceptions
 )
 
@@ -211,13 +241,13 @@ function(add_libass_wasm_target target_name out_js min_chrome modern debug_build
             -I${PREFIX_DIR}/include
             ${PERFORMANCE_ARGS}
             ${SIZE_ARGS}
-            -s EXPORTED_FUNCTIONS=[\"_malloc\",\"_free\",\"_libass_dummy\"]
+            -lembind
+            -s EXPORTED_FUNCTIONS=[\"_malloc\",\"_free\"]
             -s EXPORT_KEEPALIVE=1
             -s EXPORTED_RUNTIME_METHODS=[\"getTempRet0\",\"setTempRet0\"]
             -s IMPORTED_MEMORY=1
             -s MIN_CHROME_VERSION=${min_chrome}
-            # --memory-init-file 0
-            -s ENVIRONMENT=worker
+            -s ENVIRONMENT=web,worker
             -s EXIT_RUNTIME=0
             -s WASM_BIGINT=0
             -s ALLOW_MEMORY_GROWTH=1

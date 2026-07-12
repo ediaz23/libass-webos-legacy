@@ -17,11 +17,11 @@ struct RenderResult {
     RenderResult* next = nullptr;
 };
 
-static RenderResult* getNext(RenderResult& r) {
+static RenderResult* getNext(const RenderResult& r) {
     return r.next;
 }
 
-static uintptr_t getImage(RenderResult& r) {
+static uintptr_t getImage(const RenderResult& r) {
     return r.image;
 }
 
@@ -123,12 +123,6 @@ public:
         );
 
         return true;
-    }
-
-    void reloadFonts() {
-        if (renderer_) {
-            ass_fonts_update(renderer_);
-        }
     }
 
     int getEventCount() const {
@@ -446,7 +440,6 @@ EMSCRIPTEN_BINDINGS(LIBASS_BRIDGE) {
             .function("quitLibrary", &LibassBridge::quitLibrary)
             // fonts
             .function("addFont", &LibassBridge::addFont)
-            .function("reloadFonts", &LibassBridge::reloadFonts)
             .function("setDefaultFont", &LibassBridge::setDefaultFont)
             // track / memory
             .function("createTrackMem", &LibassBridge::createTrackMem)

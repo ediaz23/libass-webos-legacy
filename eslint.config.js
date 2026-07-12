@@ -23,6 +23,14 @@ export default defineConfig([
             n,
             import: importPlugin
         },
+        settings: {
+            'import/resolver': {
+                node: {
+                    extensions: ['.js', '.mjs', '.cjs'],
+                },
+            },
+            'import/core-modules': ['wasm'],
+        },
         rules: {
             'no-unused-vars': [
                 'error',
@@ -33,7 +41,7 @@ export default defineConfig([
                 }
             ],
             'import/extensions': ['error', 'ignorePackages'],
-            'import/no-unresolved': 'error'
+            'import/no-unresolved': ['error', { ignore: ['^wasm$'] }]
         },
     }
 ])
