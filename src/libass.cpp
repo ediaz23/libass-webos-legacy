@@ -136,31 +136,47 @@ public:
     }
 
     int allocEvent() {
-        return ass_alloc_event(track);
+        int result = -1;
+        if (track_) {
+            result = ass_alloc_event(track_);
+        }
+        return result;
     }
 
     void removeEvent(int eid) {
-        ass_free_event(track, eid);
+        if (track_) {
+            ass_free_event(track_, eid);
+        }
     }
-    
+
     int getStyleCount() const {
         return track_ ? track_->n_styles : 0;
     }
 
     int allocStyle() {
-        return ass_alloc_style(track);
+        int result = -1;
+        if (track_) {
+            result = ass_alloc_style(track_);
+        }
+        return result;
     }
 
     void removeStyle(int sid) {
-        ass_free_event(track, sid);
+        if (track_) {
+            ass_free_style(track_, sid);
+        }
     }
 
     void removeAllEvents() {
-        ass_flush_events(track);
+        if (track_) {
+            ass_flush_events(track_);
+        }
     }
 
     void setMemoryLimits(int glyph_limit, int bitmap_cache_limit) {
-        ass_set_cache_limits(ass_renderer, glyph_limit, bitmap_cache_limit);
+        if (renderer_) {
+            ass_set_cache_limits(renderer_, glyph_limit, bitmap_cache_limit);
+        }
     }
     
     int getLastChange() const {

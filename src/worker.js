@@ -5,6 +5,43 @@ import _LibassModuleFactory from 'wasm'
 LibassModuleFactory = _LibassModuleFactory
 // #endif
 
+function readSync (url, asArrayBuffer) {
+    const xhr = new XMLHttpRequest()
+    xhr.open('GET', url, false)
+    xhr.responseType = asArrayBuffer ? 'arraybuffer' : 'text'
+    xhr.send(null)
+    return xhr.response
+}
+
+function supportsWasm () {
+    let ok = false
+    try {
+        const test = new WebAssembly.Module(Uint8Array.of(0x0, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00))
+        ok = (test instanceof WebAssembly.Module) &&
+             (new WebAssembly.Instance(test) instanceof WebAssembly.Instance)
+    } catch (_e) {
+        ok = false
+    }
+    return ok
+}
+
+function bootstrapModule (data) {
+    let result
+    if (supportsWasm()) {
+        const wasmBinary = data.wasmBinary || (data.wasmUrl ? readSync(data.wasmUrl, true) : null)
+        result = LibassModuleFactory({ wasm: wasmBinary })
+    } else {
+        Object.assign(LibassModuleFactory, (function () {
+            const Module = {}
+            // eslint-disable-next-line no-eval
+            eval(readSync(data.legacyWasmUrl, false))
+            return Module
+        })())
+        result = Promise.resolve(LibassModuleFactory)
+    }
+    return result
+}
+
 const state = {
     module: null,
     libass: null,
@@ -46,7 +83,7 @@ async function init (data) {
     state.trackContent = data.subContent || ''
     state.fonts = Array.isArray(data.fonts) ? data.fonts.slice() : []
 
-    const module = await LibassModuleFactory({ wasm: data.wasmBinary })
+    const module = await bootstrapModule(data)
 
     state.module = module
     state.libass = new module.LibassBridge(
