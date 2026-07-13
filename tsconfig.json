@@ -1,0 +1,28 @@
+{
+    "compilerOptions": {
+        "resolveJsonModule": true,
+        "allowJs": true,
+        "checkJs": false,
+        "emitDeclarationOnly": true,
+        "declaration": true,
+        "esModuleInterop": true,
+        "strictNullChecks": false,
+        "noImplicitAny": false,
+        "declarationDir": "./dist/types",
+        "rootDir": "./src",
+        "target": "ES2020",
+        "module": "ESNext",
+        "moduleResolution": "Node",
+        "types": []
+    },
+    "include": [
+        "src/*.js",
+        "src/**/*.js"
+    ],
+    "exclude": [
+        "node_modules",
+        "dist",
+        "build",
+        "lib"
+    ]
+}

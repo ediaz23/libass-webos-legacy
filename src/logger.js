@@ -1,8 +1,20 @@
 const PREFIX = '[libass]'
 
 /**
- * @param {String} scope
- * @param {() => Boolean} isDebug
+ * Minimal leveled logger. `info` / `warn` / `error` always emit; `debug` is
+ * gated by the `isDebug` callback so the flag can flip at runtime without
+ * recreating the logger.
+ * @typedef {Object} Logger
+ * @property {(...args: any[]) => void} info
+ * @property {(...args: any[]) => void} warn
+ * @property {(...args: any[]) => void} error
+ * @property {(...args: any[]) => void} debug
+ */
+
+/**
+ * @param {String} scope Short label shown after the shared prefix.
+ * @param {() => Boolean} isDebug Called on every `debug()` invocation.
+ * @returns {Logger}
  */
 export function createLogger (scope, isDebug) {
     const label = PREFIX + ' ' + scope

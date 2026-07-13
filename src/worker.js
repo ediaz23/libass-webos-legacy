@@ -9,6 +9,13 @@ LibassModuleFactory = _LibassModuleFactory
 
 const log = createLogger('worker', () => state.debug)
 
+/**
+ * Resolve the emscripten module either from the ES6 factory (modern build)
+ * or by evaluating the WASM2JS bundle inline (legacy build).
+ * @param {Object} data init payload; only `data.wasmBinary` (modern) or
+ * `data.legacyWasmUrl` (legacy) is consumed.
+ * @returns {Promise<Object>} The initialized emscripten module.
+ */
 async function loadModule (data) {
     let module
     // #if process.env.JAS_TARGER === 'modern'
@@ -59,6 +66,23 @@ function ensureReady () {
     }
 }
 
+/**
+ * Boot libass inside the worker: load the WASM module, create the bridge,
+ * install initial track / fonts / cache limits. Publishes `state.ready` on success.
+ * @param {Object} data
+ * @param {Number} data.width
+ * @param {Number} data.height
+ * @param {Boolean} [data.debug]
+ * @param {String} [data.fallbackFont]
+ * @param {String} [data.subContent]
+ * @param {Array<Uint8Array>} [data.fonts]
+ * @param {ArrayBuffer} [data.wasmBinary] Modern only.
+ * @param {String} [data.legacyWasmUrl] Legacy only.
+ * @param {Number} [data.libassMemoryLimit]
+ * @param {Number} [data.libassGlyphLimit]
+ * @returns {Promise<void>}
+ * @TODO agregar soporte para quitar animcaciones complejas
+ */
 async function init (data) {
     state.width = data.width || 0
     state.height = data.height || 0
@@ -101,6 +125,15 @@ async function init (data) {
     log.info('ready')
 }
 
+/**
+ * Render one frame from libass at the given media time. Copies image bitmaps
+ * out of the WASM heap so the caller can transfer them across postMessage.
+ * @param {Object} params
+ * @param {Number} params.time Seconds.
+ * @param {Boolean} [params.force] Force the `changed` flag even if libass
+ * reports no visual change (used after resize / seek).
+ * @returns {{changed: Boolean, width: Number, height: Number, time: Number, duration: Number, images: Array<Object>}}
+ */
 function render ({ time, force }) {
     ensureReady()
 
@@ -148,6 +181,15 @@ function render ({ time, force }) {
 }
 
 
+/**
+ * Propagate a new canvas size to libass. When `force` is set, immediately
+ * re-renders the last known time so the caller can repaint the overlay.
+ * @param {Object} params
+ * @param {Number} params.width
+ * @param {Number} params.height
+ * @param {Boolean} [params.force]
+ * @returns {Object|undefined} A render result when `force` is set.
+ */
 function resize ({ width, height, force }) {
     ensureReady()
 
@@ -179,6 +221,15 @@ function destroy () {
     state.destroyed = true
 }
 
+/**
+ * Copy a font buffer into WASM memory and register it with libass. Modern
+ * libass (>= 0.16) picks up the font in the next `ass_render_frame` — no
+ * explicit refresh call is needed.
+ * @param {Object} params
+ * @param {String} params.name Label used to reference the font internally.
+ * @param {Uint8Array|ArrayBuffer} params.font Raw font file bytes.
+ * @returns {Promise<void>}
+ */
 async function addFont ({ name, font }) {
     ensureReady()
 
@@ -190,6 +241,11 @@ async function addFont ({ name, font }) {
     log.debug('font added', { name, bytes: uint8.byteLength })
 }
 
+/**
+ * Replace the current .ass track.
+ * @param {Object} params
+ * @param {String} params.content Raw .ass text.
+ */
 function setTrack ({ content }) {
     ensureReady()
 

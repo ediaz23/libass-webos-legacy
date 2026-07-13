@@ -21,6 +21,19 @@ const DEFAULT_CLASS_C_SAMPLES_MIN = 3
 const DEFAULT_CLASS_C_SAMPLES_MAX = 8
 const DEFAULT_CLASS_C_MIN_INTERVAL_MS = 100
 
+/**
+ * Sort an event into A/B/C/D based on its override tags. Precedence is
+ * D > C > B > A — the first D-marker seen wins over any lighter classification.
+ *
+ * - A: no override tags of interest.
+ * - B: static overrides only (position, color, size, italics, etc.).
+ * - C: time-driven animations (`\t`, `\move`, `\fad`).
+ * - D: multiple `\t` chained, karaoke (`\k`/`\kf`/`\ko`), or animated clip.
+ *
+ * @param {String} text Event text including `{...}` override groups.
+ * @param {String} effect The Effect column (empty for most dialogue events).
+ * @returns {'A'|'B'|'C'|'D'}
+ */
 function classify (text, effect) {
     let cls = 'A'
     if (effect) {
@@ -38,6 +51,12 @@ function classify (text, effect) {
     return cls
 }
 
+/**
+ * Schedule `cb` for the next browser idle slot. Falls back to `setTimeout`
+ * with a small fake deadline when the host has no `requestIdleCallback`.
+ * @param {(deadline: IdleDeadline) => void} cb
+ * @returns {Number} Opaque handle usable with {@link cancelIdle}.
+ */
 function requestIdle (cb) {
     let handle
     if (typeof requestIdleCallback === 'function') {
@@ -48,6 +67,9 @@ function requestIdle (cb) {
     return handle
 }
 
+/**
+ * @param {Number|null} handle
+ */
 function cancelIdle (handle) {
     if (handle != null) {
         if (typeof cancelIdleCallback === 'function') {
@@ -59,20 +81,122 @@ function cancelIdle (handle) {
 }
 
 /**
+ * A single event of the parsed .ass script after classification.
  * @typedef {Object} EventPlan
- * @property {Number} index
- * @property {'A'|'B'|'C'|'D'} type
- * @property {Number} start
- * @property {Number} end
- * @property {Array<Number>} samples
+ * @property {Number} index Position of the event in the track's event list.
+ * @property {'A'|'B'|'C'|'D'} type Complexity class assigned by {@link classify}.
+ * @property {Number} start Start time in seconds.
+ * @property {Number} end End time in seconds.
+ * @property {Array<Number>} samples Timestamps (seconds) at which this event is pre-rendered.
  */
 
 /**
+ * A cached render result. All coordinates are in canvas-pixels; the bitmap
+ * is already in the final render resolution and can be blitted verbatim.
  * @typedef {Object} RenderEntry
  * @property {Array<{x:Number, y:Number, w:Number, h:Number, bitmap:ImageBitmap}>} images
+ * @property {Number} width Canvas width at the moment of the render.
+ * @property {Number} height Canvas height at the moment of the render.
+ * @property {Number} time Time (seconds) requested to libass.
+ * @property {Number} bytes Approximate memory footprint used by the LRU accounting.
+ */
+
+/**
+ * A raw image node as returned by the worker before it is turned into an
+ * {@link ImageBitmap}. Pixels are RGBA in row-major order.
+ * @typedef {Object} WorkerRawImage
+ * @property {Number} x
+ * @property {Number} y
+ * @property {Number} w
+ * @property {Number} h
+ * @property {Number} stride
+ * @property {Number} color
+ * @property {Uint8Array|ArrayBuffer} image
+ */
+
+/**
+ * Raw render payload received from the worker.
+ * @typedef {Object} WorkerRawRender
+ * @property {Boolean} changed
  * @property {Number} width
  * @property {Number} height
  * @property {Number} time
+ * @property {Number} duration
+ * @property {Array<WorkerRawImage>} images
+ */
+
+/**
+ * ASS event as exposed by libass (mirrors {@link ASS_Event} in the C bindings).
+ * @typedef {Object} ASSEvent
+ * @property {Number} Start Start time in centiseconds.
+ * @property {Number} Duration Duration in centiseconds.
+ * @property {Number} ReadOrder
+ * @property {Number} Layer
+ * @property {Number} Style Index into the styles table.
+ * @property {Number} MarginL
+ * @property {Number} MarginR
+ * @property {Number} MarginV
+ * @property {String} Name
+ * @property {String} Text Includes override tags in curly braces.
+ * @property {String} Effect
+ */
+
+/**
+ * ASS style as exposed by libass (mirrors {@link ASS_Style} in the C bindings).
+ * @typedef {Object} ASSStyle
+ * @property {String} Name
+ * @property {String} FontName
+ * @property {Number} FontSize
+ * @property {Number} PrimaryColour Packed RGBA.
+ * @property {Number} SecondaryColour Packed RGBA.
+ * @property {Number} OutlineColour Packed RGBA.
+ * @property {Number} BackColour Packed RGBA.
+ * @property {Number} Bold
+ * @property {Number} Italic
+ * @property {Number} Underline
+ * @property {Number} StrikeOut
+ * @property {Number} ScaleX
+ * @property {Number} ScaleY
+ * @property {Number} Spacing
+ * @property {Number} Angle
+ * @property {Number} BorderStyle
+ * @property {Number} Outline
+ * @property {Number} Shadow
+ * @property {Number} Alignment
+ * @property {Number} MarginL
+ * @property {Number} MarginR
+ * @property {Number} MarginV
+ * @property {Number} Encoding
+ * @property {Number} treat_fontname_as_pattern
+ * @property {Number} Blur
+ * @property {Number} Justify
+ */
+
+/**
+ * Options accepted by {@link LibAss#load}.
+ * @typedef {Object} LibAssOptions
+ * @property {HTMLVideoElement} [video] Video element to bind rVFC and canvas overlay to.
+ * @property {HTMLCanvasElement} [canvas] Explicit canvas to render into; if omitted and a video is provided, one is created and inserted after the video.
+ * @property {String} [workerUrl='libass-worker.js'] URL of the worker script.
+ * @property {String} [wasmUrl='libass.wasm'] URL of the wasm binary (modern target).
+ * @property {String} [legacyWasmUrl] URL of the WASM2JS bundle (legacy target).
+ * @property {String} [subContent] Initial .ass text to load.
+ * @property {Array<Uint8Array>} [fonts] Extra fonts to register.
+ * @property {String} [fallbackFont=''] Family name to use when the .ass style references a missing font.
+ * @property {Number} [timeOffset=0] Seconds added to every incoming media time.
+ * @property {Boolean} [debug=false] Enable verbose logging via `console.debug`.
+ * @property {Number} [libassMemoryLimit=0] libass bitmap-cache byte limit (0 = default).
+ * @property {Number} [libassGlyphLimit=0] libass glyph-cache count limit (0 = default).
+ * @property {Number} [maxCacheBytes] Byte budget for the JS-side render cache.
+ * @property {Number} [prefetchForwardMs] Forward window in ms for idle-time prefetch.
+ * @property {Number} [classCSamplesMin] Lower bound on samples generated for class C events.
+ * @property {Number} [classCSamplesMax] Upper bound on samples generated for class C events.
+ * @property {Number} [classCMinIntervalMs] Minimum ms between successive samples of a class C event.
+ */
+
+/**
+ * @typedef {Object} CacheStats
+ * @property {Number} size
  * @property {Number} bytes
  */
 
@@ -143,24 +267,11 @@ export default class LibAss extends EventTargetBase {
     }
 
     /**
-     * @param {Object} options
-     * @param {HTMLVideoElement} [options.video]
-     * @param {HTMLCanvasElement} [options.canvas]
-     * @param {String} [options.workerUrl='libass-worker.js']
-     * @param {String} [options.wasmUrl='libass.wasm']
-     * @param {String} [options.legacyWasmUrl]
-     * @param {String} [options.subContent]
-     * @param {Array<Uint8Array>} [options.fonts]
-     * @param {String} [options.fallbackFont='']
-     * @param {Number} [options.timeOffset=0]
-     * @param {Boolean} [options.debug=false]
-     * @param {Number} [options.libassMemoryLimit=0]
-     * @param {Number} [options.libassGlyphLimit=0]
-     * @param {Number} [options.maxCacheBytes]
-     * @param {Number} [options.prefetchForwardMs]
-     * @param {Number} [options.classCSamplesMin]
-     * @param {Number} [options.classCSamplesMax]
-     * @param {Number} [options.classCMinIntervalMs]
+     * Boot the runtime. Spawns the worker, initializes libass, wires the video
+     * (rVFC + pause/seeked), and, if `subContent` is provided, parses the track
+     * and schedules the initial prefetch.
+     * @param {LibAssOptions} options
+     * @returns {Promise<void>}
      */
     async load (options) {
         if (!options) {
@@ -278,7 +389,10 @@ export default class LibAss extends EventTargetBase {
     }
 
     /**
+     * Attach (or replace) the video element the renderer follows. Registers
+     * rVFC and `pause`/`seeked` listeners. Detaches any previous video.
      * @param {HTMLVideoElement} video
+     * @returns {Promise<void>}
      */
     async setVideo (video) {
         this._detachVideoListeners()
@@ -330,6 +444,15 @@ export default class LibAss extends EventTargetBase {
         }
     }
 
+    /**
+     * Recompute canvas geometry. If any dimension is missing, derives them from
+     * the current video's aspect ratio. Invalidates the render cache.
+     * @param {Number} [width]
+     * @param {Number} [height]
+     * @param {Number} [top]
+     * @param {Number} [left]
+     * @returns {Promise<void>}
+     */
     async resize (width, height, top, left) {
         const rect = this._resolveResizeRect(width, height, top, left)
         if (rect) {
@@ -386,6 +509,11 @@ export default class LibAss extends EventTargetBase {
         return { width: w, height: h, x, y }
     }
 
+    /**
+     * Replace the current .ass track. Triggers a fresh classification and prefetch.
+     * @param {String} content Raw .ass file contents.
+     * @returns {Promise<void>}
+     */
     async setTrack (content) {
         await this._callWorker('setTrack', { content })
         await this.buildPlans()
@@ -393,6 +521,10 @@ export default class LibAss extends EventTargetBase {
         this.dispatchEvent(new CustomEvent('ready'))
     }
 
+    /**
+     * Drop the current track, invalidate all cached bitmaps and clear the canvas.
+     * @returns {Promise<void>}
+     */
     async removeTrack () {
         await this._callWorker('removeTrack')
         this._plans = []
@@ -402,46 +534,97 @@ export default class LibAss extends EventTargetBase {
         this._clearCanvas()
     }
 
+    /**
+     * Register an extra font in libass. Picked up automatically at the next render.
+     * @param {String} name
+     * @param {Uint8Array|ArrayBuffer} font
+     * @returns {Promise<void>}
+     */
     async addFont (name, font) {
         await this._callWorker('addFont', { name, font })
     }
 
+    /**
+     * Set the family used when a style references an unavailable font.
+     * @param {String} font
+     * @returns {Promise<void>}
+     */
     async setDefaultFont (font) {
         await this._callWorker('setDefaultFont', { font })
     }
 
+    /**
+     * Append a new style to the track.
+     * @param {ASSStyle} style
+     * @returns {Promise<{index: Number}>}
+     */
     async createStyle (style) {
         return this._callWorker('createStyle', { style })
     }
 
+    /**
+     * Snapshot of all styles in the track.
+     * @returns {Promise<{styles: Array<ASSStyle>}>}
+     */
     async getStyles () {
         return this._callWorker('getStyles')
     }
 
+    /**
+     * @param {Number} index
+     * @returns {Promise<void>}
+     */
     async removeStyle (index) {
         await this._callWorker('removeStyle', { index })
     }
 
+    /**
+     * Force the given style to override the per-event styles at render time.
+     * @param {Number} index
+     * @returns {Promise<void>}
+     */
     async setStyleOverride (index) {
         await this._callWorker('setStyleOverride', { index })
     }
 
+    /**
+     * Undo a previous {@link LibAss#setStyleOverride}.
+     * @returns {Promise<void>}
+     */
     async removeStyleOverride () {
         await this._callWorker('removeStyleOverride')
     }
 
+    /**
+     * Append a new event to the track.
+     * @param {ASSEvent} event
+     * @returns {Promise<{index: Number}>}
+     */
     async createEvent (event) {
         return this._callWorker('createEvent', { event })
     }
 
+    /**
+     * Snapshot of all events in the track.
+     * @returns {Promise<{events: Array<ASSEvent>}>}
+     */
     async getEvents () {
         return this._callWorker('getEvents')
     }
 
+    /**
+     * @param {Number} index
+     * @returns {Promise<void>}
+     */
     async removeEvent (index) {
         await this._callWorker('removeEvent', { index })
     }
 
+    /**
+     * Fetch the events from the worker, classify each into A/B/C/D, and build
+     * their sampling schedules. Invalidates the current cache.
+     * @returns {Promise<void>}
+     */
     async buildPlans () {
         this._clearPrefetch()
         this.clearCache()
@@ -579,6 +762,13 @@ export default class LibAss extends EventTargetBase {
         return entry
     }
 
+    /**
+     * Render the subtitle for the given media time. Called by rVFC and by
+     * `pause`/`seeked` handlers. Uses cache + level-2 shortcut for A/B/C
+     * events and bypasses the pipeline entirely for D.
+     * @param {Number} [time] Seconds; when omitted, uses the video's current time + `timeOffset`.
+     * @returns {Promise<void>}
+     */
     async render (time) {
         let t = time
         if (typeof t !== 'number' || !isFinite(t)) {
@@ -653,12 +843,20 @@ export default class LibAss extends EventTargetBase {
         }
     }
 
+    /**
+     * Drop every cached render entry (bitmaps get `close()`d) and reset the
+     * last-drawn key. Called on resize and internally on track changes.
+     */
     clearCache () {
         this._renderCache.clear()
         this._lastRenderKey = ''
         this._lastRendered = null
     }
 
+    /**
+     * Current occupancy of the render cache.
+     * @returns {CacheStats}
+     */
     getCacheStats () {
         return {
             size: this._renderCache.size,
@@ -735,6 +933,11 @@ export default class LibAss extends EventTargetBase {
         }
     }
 
+    /**
+     * Tear down: cancel rVFC, detach video listeners, clear the prefetch queue
+     * and cache, terminate the worker, remove the auto-created canvas.
+     * @returns {Promise<void>}
+     */
     async destroy () {
         this._log.info('destroy')
         if (this._video &&

@@ -89,4 +89,7 @@ if [[ "$TARGET" == "all" || "$TARGET" == "legacy" ]]; then
     build_target "legacy"
 fi
 
+echo "==> Emitting TypeScript declarations"
+npm run types
+
 echo "==> Done."
