@@ -16,9 +16,31 @@
         "type": "git",
         "url": "git+https://github.com/ediaz23/libass-webos-legacy.git"
     },
-    "keywords": [],
+    "exports": {
+        ".": "./dist/modern/libass.min.js",
+        "./debug": "./dist/modern/libass.debug.js",
+        "./legacy": "./dist/legacy/libass.min.js",
+        "./legacy/debug": "./dist/legacy/libass.debug.js",
+        "./legacy/*": "./dist/legacy/*",
+        "./modern/*": "./dist/modern/*"
+    },
+    "files": [
+        "dist",
+        "LICENSE",
+        "README.md"
+    ],
+    "keywords": [
+        "libass",
+        "subtitle",
+        "ass",
+        "wasm",
+        "emscripten",
+        "webos",
+        "chromium68",
+        "legacy"
+    ],
     "author": "Esteban Díaz <esteban.diazt23@gmail.com>",
-    "license": "Apache-2.0",
+    "license": "LGPL-2.1-or-later AND (FTL OR GPL-2.0-or-later) AND MIT AND ISC AND Apache-2.0",
     "type": "module",
     "bugs": {
         "url": "https://github.com/ediaz23/libass-webos-legacy/issues"

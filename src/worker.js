@@ -1,9 +1,13 @@
 
+import { createLogger } from './logger.js'
+
 let LibassModuleFactory = {}
 // #if process.env.JAS_TARGER === 'modern'
 import _LibassModuleFactory from 'wasm'
 LibassModuleFactory = _LibassModuleFactory
 // #endif
+
+const log = createLogger('worker', () => state.debug)
 
 async function loadModule (data) {
     let module
@@ -55,9 +59,6 @@ function ensureReady () {
     }
 }
 
-/**
- * @TODO agregar soporte para quitar animcaciones complejas
- */
 async function init (data) {
     state.width = data.width || 0
     state.height = data.height || 0
@@ -66,7 +67,10 @@ async function init (data) {
     state.trackContent = data.subContent || ''
     state.fonts = Array.isArray(data.fonts) ? data.fonts.slice() : []
 
+    log.info('init', { width: state.width, height: state.height, fonts: state.fonts.length })
+
     const module = await loadModule(data)
+    log.info('module loaded')
 
     state.module = module
     state.libass = new module.LibassBridge(
@@ -78,10 +82,12 @@ async function init (data) {
 
     if (state.trackContent) {
         state.libass.createTrackMem(state.trackContent)
+        log.info('track loaded from init')
     }
 
     if (data.libassMemoryLimit > 0 || data.libassGlyphLimit > 0) {
         state.libass.setMemoryLimits(data.libassGlyphLimit || 0, data.libassMemoryLimit || 0)
+        log.debug('cache limits', { glyph: data.libassGlyphLimit, bitmap: data.libassMemoryLimit })
     }
 
     state.ready = true
@@ -92,6 +98,7 @@ async function init (data) {
     }
 
     state.lastCurrentTimeReceivedAt = nowMs()
+    log.info('ready')
 }
 
 function render ({ time, force }) {
@@ -101,6 +108,7 @@ function render ({ time, force }) {
     const head = state.libass.renderImage(time)
     const changed = !!force || state.libass.getLastChange() !== 0
     const images = []
+    log.debug('render', { time, changed, force: !!force })
 
     if (changed && head) {
         let node = head
@@ -147,6 +155,7 @@ function resize ({ width, height, force }) {
         throw new Error('Invalid canvas size specified')
     }
 
+    log.debug('resize', { width, height, force: !!force })
     state.width = width
     state.height = height
     state.libass.resizeCanvas(state.width, state.height)
@@ -159,6 +168,7 @@ function resize ({ width, height, force }) {
 }
 
 function destroy () {
+    log.info('destroy')
     if (state.libass) {
         state.libass.quitLibrary()
     }
@@ -177,6 +187,7 @@ async function addFont ({ name, font }) {
 
     state.module.HEAPU8.set(uint8, ptr)
     state.libass.addFont(name, ptr, uint8.byteLength)
+    log.debug('font added', { name, bytes: uint8.byteLength })
 }
 
 function setTrack ({ content }) {
@@ -184,6 +195,7 @@ function setTrack ({ content }) {
 
     state.trackContent = content
     state.libass.createTrackMem(state.trackContent)
+    log.info('track updated', { bytes: content ? content.length : 0 })
 }
 
 function removeTrack () {

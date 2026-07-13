@@ -7,6 +7,7 @@ EventTargetBase = EventTargetShim
 // #endif
 
 import LRUCache from './LRUCache.js'
+import { createLogger } from './logger.js'
 
 const RE_D_MULTIPLE_T = /\\t\s*\([^)]*\)[^{]*\\t\s*\(/
 const RE_D_KARAOKE = /\\k[fo]?\d/
@@ -82,6 +83,8 @@ export default class LibAss extends EventTargetBase {
         this.debug = false
         /** @type {Number} */
         this.timeOffset = 0
+
+        this._log = createLogger('main', () => this.debug)
 
         /** @type {HTMLVideoElement} */
         this._video = null
@@ -166,6 +169,7 @@ export default class LibAss extends EventTargetBase {
 
         this.debug = !!options.debug
         this.timeOffset = options.timeOffset || 0
+        this._log.info('loading')
 
         this._video = options.video || null
         this._canvas = options.canvas || null
@@ -224,6 +228,7 @@ export default class LibAss extends EventTargetBase {
             await this.buildPlans()
             this._schedulePrefetch(this._currentTimeSafe())
         }
+        this._log.info('ready')
         this.dispatchEvent(new CustomEvent('ready'))
     }
 
@@ -253,6 +258,7 @@ export default class LibAss extends EventTargetBase {
     }
 
     _handleWorkerError (error) {
+        this._log.error('worker error', error && error.message ? error.message : error)
         this._pending.forEach((pending) => {
             pending.reject(error)
         })
@@ -307,12 +313,14 @@ export default class LibAss extends EventTargetBase {
     }
 
     _handlePause () {
+        this._log.debug('pause')
         if (this._video) {
             this.render(this._currentTimeSafe())
         }
     }
 
     _handleSeeked () {
+        this._log.debug('seeked', { time: this._currentTimeSafe() })
         this._planCursor = 0
         this._clearPrefetch()
         this._lastRenderKey = ''
@@ -441,6 +449,7 @@ export default class LibAss extends EventTargetBase {
         this._plans = []
         this._planCursor = 0
 
+        const breakdown = { A: 0, B: 0, C: 0, D: 0 }
         for (let i = 0; i < events.length; i++) {
             const event = events[i]
             const start = (event.Start || 0) / 100
@@ -449,6 +458,7 @@ export default class LibAss extends EventTargetBase {
             const text = event.Text || ''
             const effect = event.Effect || ''
             const type = classify(text, effect)
+            breakdown[type]++
 
             this._plans.push({
                 index: i,
@@ -458,6 +468,7 @@ export default class LibAss extends EventTargetBase {
                 samples: this._buildSamples(type, start, end),
             })
         }
+        this._log.info('plans built', { total: events.length, ...breakdown })
     }
 
     _buildSamples (type, start, end) {
@@ -585,6 +596,7 @@ export default class LibAss extends EventTargetBase {
     }
 
     async _renderLive (time) {
+        this._log.debug('render live (D)', { time })
         const raw = await this._renderAt(time)
         const entry = await this._toEntry(raw)
         this._drawRenderResult(entry)
@@ -599,6 +611,13 @@ export default class LibAss extends EventTargetBase {
         const key = this._buildRenderCacheKey(planned, planIndex)
 
         if (key !== this._lastRenderKey || !this._lastRendered) {
+            const hit = this._renderCache.has(key)
+            this._log.debug(hit ? 'render hit' : 'render miss', {
+                time,
+                planIndex,
+                type: plan ? plan.type : 'none',
+                planned,
+            })
             const entry = await this._ensureCached(planned, planIndex)
             this._drawRenderResult(entry)
             this._lastRenderKey = key
@@ -664,6 +683,7 @@ export default class LibAss extends EventTargetBase {
             cursor++
         }
         if (this._prefetchQueue.length) {
+            this._log.debug('prefetch scheduled', { queued: this._prefetchQueue.length, fromTime })
             this._prefetchHandle = requestIdle(this._boundDrainPrefetch)
         }
     }
@@ -716,6 +736,7 @@ export default class LibAss extends EventTargetBase {
     }
 
     async destroy () {
+        this._log.info('destroy')
         if (this._video &&
             typeof this._video.cancelVideoFrameCallback === 'function' &&
             this._rvfcHandle != null) {
