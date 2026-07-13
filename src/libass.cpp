@@ -206,7 +206,7 @@ public:
         ass_set_font_scale(renderer_, 1.0);
     }
     
-    RenderResult* renderImage(long long timeMs) {
+    RenderResult* renderImage(double timeMs) {
         clearRenderResult();
 
         if (!renderer_ || !track_) return nullptr;
@@ -340,20 +340,20 @@ static void setFontName(ASS_Style& s, const std::string& value) {
 }
 
 // ===== ASS_Event helpers =====
-static long long getStart(const ASS_Event& e) {
-    return e.Start;
+static double getStart(const ASS_Event& e) {
+    return static_cast<double>(e.Start);
 }
 
-static void setStart(ASS_Event& e, long long value) {
-    e.Start = static_cast<int>(value);
+static void setStart(ASS_Event& e, double value) {
+    e.Start = static_cast<long long>(value);
 }
 
-static long long getDuration(const ASS_Event& e) {
-    return e.Duration;
+static double getDuration(const ASS_Event& e) {
+    return static_cast<double>(e.Duration);
 }
 
-static void setDuration(ASS_Event& e, long long value) {
-    e.Duration = static_cast<int>(value);
+static void setDuration(ASS_Event& e, double value) {
+    e.Duration = static_cast<long long>(value);
 }
 
 static std::string getEventName(const ASS_Event& e) {

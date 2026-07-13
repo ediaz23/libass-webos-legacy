@@ -374,6 +374,7 @@ export default class LibAss extends EventTargetBase {
             pending.reject(error)
         })
         this._pending.clear()
+        this.dispatchEvent(new CustomEvent('error', { detail: error }))
     }
 
     _callWorker (target, payload) {
@@ -510,6 +511,23 @@ export default class LibAss extends EventTargetBase {
     }
 
     /**
+     * Swap the video element and/or the track content in one call. Convenient
+     * when reusing an initialized instance across pages or episodes.
+     * @param {Object} params
+     * @param {HTMLVideoElement} [params.video]
+     * @param {String} [params.subContent]
+     * @returns {Promise<void>}
+     */
+    async setNewContext ({ video, subContent } = {}) {
+        if (video) {
+            await this.setVideo(video)
+        }
+        if (subContent != null) {
+            await this.setTrack(subContent)
+        }
+    }
+
+    /**
      * Replace the current .ass track. Triggers a fresh classification and prefetch.
      * @param {String} content Raw .ass file contents.
      * @returns {Promise<void>}
@@ -568,6 +586,17 @@ export default class LibAss extends EventTargetBase {
      */
     async getStyles () {
         return this._callWorker('getStyles')
+    }
+
+    /**
+     * Overwrite an existing style in place. The next render picks up the change.
+     * @param {Number} index
+     * @param {ASSStyle} style
+     * @returns {Promise<void>}
+     */
+    async setStyle (index, style) {
+        await this._callWorker('setStyle', { index, style })
+        this.clearCache()
     }
 
     /**
