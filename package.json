@@ -27,6 +27,7 @@
     "files": [
         "dist",
         "LICENSE",
+        "THIRD_PARTY_LICENSES",
         "README.md"
     ],
     "keywords": [
