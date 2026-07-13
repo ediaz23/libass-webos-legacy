@@ -190,6 +190,7 @@ set(LIBASS_DEPS
 )
 
 set(SRC_CPP "${SRC_DIR}/libass.cpp")
+set(PRE_JS "${SRC_DIR}/pre-worker.js")
 
 # ===== emcc args =====
 set(PERFORMANCE_ARGS
@@ -242,6 +243,7 @@ function(add_libass_wasm_target target_name out_js min_chrome modern debug_build
             ${PERFORMANCE_ARGS}
             ${SIZE_ARGS}
             -lembind
+            --pre-js "${PRE_JS}"
             -s EXPORTED_FUNCTIONS=[\"_malloc\",\"_free\"]
             -s EXPORT_KEEPALIVE=1
             -s EXPORTED_RUNTIME_METHODS=[\"getTempRet0\",\"setTempRet0\"]
@@ -258,7 +260,7 @@ function(add_libass_wasm_target target_name out_js min_chrome modern debug_build
             -s EXPORT_NAME=LibassWorker
             ${opt_level}
             -o "${out_js}"
-        DEPENDS libass_ep ${LIBASS_DEPS} "${SRC_CPP}"
+        DEPENDS libass_ep ${LIBASS_DEPS} "${SRC_CPP}" "${PRE_JS}"
         VERBATIM
     )
 

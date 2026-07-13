@@ -150,7 +150,7 @@ function render ({ time, force }) {
             const size = node.stride * node.h
             const copy = new Uint8Array(size)
 
-            copy.set(state.module.HEAPU8.subarray(node.image, node.image + size))
+            copy.set(self.HEAPU8.subarray(node.image, node.image + size))
 
             images.push({
                 x: node.x,
@@ -236,7 +236,7 @@ async function addFont ({ name, font }) {
     const uint8 = font instanceof Uint8Array ? font : new Uint8Array(font)
     const ptr = state.module._malloc(uint8.byteLength)
 
-    state.module.HEAPU8.set(uint8, ptr)
+    self.HEAPU8.set(uint8, ptr)
     state.libass.addFont(name, ptr, uint8.byteLength)
     log.debug('font added', { name, bytes: uint8.byteLength })
 }
