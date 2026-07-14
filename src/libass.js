@@ -1,11 +1,5 @@
 import 'rvfc-legacy-polyfill'
 
-let EventTargetBase = EventTarget
-// #if process.env.JAS_TARGER === 'legacy'
-import { EventTarget as EventTargetShim } from 'event-target-shim'
-EventTargetBase = EventTargetShim
-// #endif
-
 import LRUCache from './LRUCache.js'
 import { createLogger } from './logger.js'
 
@@ -192,6 +186,7 @@ function cancelIdle (handle) {
  * @property {Number} [classCSamplesMin] Lower bound on samples generated for class C events.
  * @property {Number} [classCSamplesMax] Upper bound on samples generated for class C events.
  * @property {Number} [classCMinIntervalMs] Minimum ms between successive samples of a class C event.
+ * @property {(error: Error|Event) => void} [onError] Called when the worker reports an error that is not tied to an outstanding call. If unset, the error is rethrown so it surfaces as an unhandled rejection / `window.onerror`.
  */
 
 /**
@@ -200,15 +195,16 @@ function cancelIdle (handle) {
  * @property {Number} bytes
  */
 
-export default class LibAss extends EventTargetBase {
+export default class LibAss {
     constructor () {
-        super()
-
         this.debug = false
         /** @type {Number} */
         this.timeOffset = 0
 
         this._log = createLogger('main', () => this.debug)
+
+        /** @type {((error: Error|Event) => void) | null} */
+        this._onError = null
 
         /** @type {HTMLVideoElement} */
         this._video = null
@@ -280,6 +276,7 @@ export default class LibAss extends EventTargetBase {
 
         this.debug = !!options.debug
         this.timeOffset = options.timeOffset || 0
+        this._onError = typeof options.onError === 'function' ? options.onError : null
         this._log.info('loading')
 
         this._video = options.video || null
@@ -340,7 +337,6 @@ export default class LibAss extends EventTargetBase {
             this._schedulePrefetch(this._currentTimeSafe())
         }
         this._log.info('ready')
-        this.dispatchEvent(new CustomEvent('ready'))
     }
 
     _createCanvas () {
@@ -370,11 +366,16 @@ export default class LibAss extends EventTargetBase {
 
     _handleWorkerError (error) {
         this._log.error('worker error', error && error.message ? error.message : error)
+        const hadPending = this._pending.size > 0
         this._pending.forEach((pending) => {
             pending.reject(error)
         })
         this._pending.clear()
-        this.dispatchEvent(new CustomEvent('error', { detail: error }))
+        if (this._onError) {
+            this._onError(error)
+        } else if (!hadPending) {
+            throw error
+        }
     }
 
     _callWorker (target, payload) {
@@ -536,7 +537,6 @@ export default class LibAss extends EventTargetBase {
         await this._callWorker('setTrack', { content })
         await this.buildPlans()
         this._schedulePrefetch(this._currentTimeSafe())
-        this.dispatchEvent(new CustomEvent('ready'))
     }
 
     /**
@@ -992,6 +992,5 @@ export default class LibAss extends EventTargetBase {
         if (this._video && this._canvasParent && this._video.parentNode) {
             this._video.parentNode.removeChild(this._canvasParent)
         }
-        this.dispatchEvent(new CustomEvent('destroy'))
     }
 }

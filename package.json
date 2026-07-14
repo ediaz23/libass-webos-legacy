@@ -19,10 +19,22 @@
     },
     "types": "./dist/types/libass.d.ts",
     "exports": {
-        ".": "./dist/modern/libass.min.js",
-        "./debug": "./dist/modern/libass.debug.js",
-        "./legacy": "./dist/legacy/libass.min.js",
-        "./legacy/debug": "./dist/legacy/libass.debug.js",
+        ".": {
+            "types": "./dist/types/libass.d.ts",
+            "default": "./dist/modern/libass.min.js"
+        },
+        "./debug": {
+            "types": "./dist/types/libass.d.ts",
+            "default": "./dist/modern/libass.debug.js"
+        },
+        "./legacy": {
+            "types": "./dist/types/libass.d.ts",
+            "default": "./dist/legacy/libass.min.js"
+        },
+        "./legacy/debug": {
+            "types": "./dist/types/libass.d.ts",
+            "default": "./dist/legacy/libass.debug.js"
+        },
         "./legacy/*": "./dist/legacy/*",
         "./modern/*": "./dist/modern/*"
     },
@@ -51,7 +63,6 @@
     "homepage": "https://github.com/ediaz23/libass-webos-legacy#readme",
     "dependencies": {
         "@babel/runtime": "^7.27.6",
-        "event-target-shim": "^6.0.2",
         "rvfc-legacy-polyfill": "^0.1.0"
     },
     "devDependencies": {
