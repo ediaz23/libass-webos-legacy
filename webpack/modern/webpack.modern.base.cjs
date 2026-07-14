@@ -30,6 +30,9 @@ const modernConfig = merge(commonBaseConfig, {
             }, {
                 loader: 'webpack-conditional-loader'
             }]
+        }, {
+            test: /worker\.(debug|min)\.js$/,
+            parser: { url: false }
         }]
     }
 })

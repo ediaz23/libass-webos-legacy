@@ -198,7 +198,6 @@ set(PERFORMANCE_ARGS
     -s INVOKE_RUN=0
     -s DISABLE_EXCEPTION_CATCHING=1
     -s TEXTDECODER=1
-    -s MINIMAL_RUNTIME_STREAMING_WASM_INSTANTIATION=1
     --no-heap-copy
     -fno-exceptions
 )
@@ -209,9 +208,8 @@ set(SIZE_ARGS
     -s AUTO_JS_LIBRARIES=0
     -s AUTO_NATIVE_LIBRARIES=0
     -s HTML5_SUPPORT_DEFERRING_USER_SENSITIVE_REQUESTS=0
-    -s INCOMING_MODULE_JS_API=[]
+    -s INCOMING_MODULE_JS_API=[\"locateFile\",\"printErr\"]
     -s USE_SDL=0
-    -s MINIMAL_RUNTIME=1
 )
 
 function(add_libass_wasm_target target_name out_js min_chrome modern debug_build)
@@ -240,6 +238,7 @@ function(add_libass_wasm_target target_name out_js min_chrome modern debug_build
             "${SRC_CPP}"
             ${LIBASS_DEPS}
             -I${PREFIX_DIR}/include
+            -I${PREFIX_DIR}/include/freetype2
             ${PERFORMANCE_ARGS}
             ${SIZE_ARGS}
             -lembind

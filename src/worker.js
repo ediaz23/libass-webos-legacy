@@ -19,7 +19,19 @@ const log = createLogger('worker', () => state.debug)
 async function loadModule (data) {
     let module
     // #if process.env.JAS_TARGER === 'modern'
-    module = await LibassModuleFactory({ wasm: data.wasmBinary })
+    const modernOptions = {
+        printErr: (text) => {
+            if (typeof text === 'string' && text.startsWith('[ass]')) {
+                console.warn(text)
+            } else {
+                console.error(text)
+            }
+        },
+    }
+    if (data.wasmUrl) {
+        modernOptions.locateFile = () => data.wasmUrl
+    }
+    module = await LibassModuleFactory(modernOptions)
     // #endif
     // #if process.env.JAS_TARGER === 'legacy'
     module = (function () {
@@ -81,7 +93,6 @@ function ensureReady () {
  * @param {Number} [data.libassMemoryLimit]
  * @param {Number} [data.libassGlyphLimit]
  * @returns {Promise<void>}
- * @TODO agregar soporte para quitar animcaciones complejas
  */
 async function init (data) {
     state.width = data.width || 0
@@ -138,12 +149,11 @@ function render ({ time, force }) {
     ensureReady()
 
     const startedAt = state.debug ? performance.now() : 0
-    const head = state.libass.renderImage(time)
+    const head = state.libass.renderImage(time * 1000)
     const changed = !!force || state.libass.getLastChange() !== 0
     const images = []
-    log.debug('render', { time, changed, force: !!force })
 
-    if (changed && head) {
+    if (head) {
         let node = head
 
         while (node) {
@@ -170,12 +180,28 @@ function render ({ time, force }) {
         state.libass.freeRenderResult(head)
     }
 
+    const duration = state.debug ? performance.now() - startedAt : 0
+    let bytes = 0
+    for (let i = 0; i < images.length; i++) {
+        bytes += images[i].image ? images[i].image.byteLength : 0
+    }
+    log.debug('render', {
+        time,
+        timeMs: time * 1000,
+        changed,
+        force: !!force,
+        imageCount: images.length,
+        bytes,
+        durationMs: duration.toFixed ? Number(duration.toFixed(2)) : duration,
+        canvas: `${state.width}x${state.height}`,
+    })
+
     return {
         changed,
         width: state.width,
         height: state.height,
         time,
-        duration: state.debug ? performance.now() - startedAt : 0,
+        duration,
         images
     }
 }
@@ -398,6 +424,18 @@ function removeEvent ({ index }) {
 }
 
 
+function getFontFamilies () {
+    ensureReady()
+    const vec = state.libass.getFontFamilies()
+    const out = []
+    const size = vec.size()
+    for (let i = 0; i < size; i++) {
+        out.push(vec.get(i))
+    }
+    vec.delete()
+    return { families: out }
+}
+
 const handlers = {
     init,
     destroy,
@@ -409,6 +447,7 @@ const handlers = {
     // fonts
     addFont,
     setDefaultFont,
+    getFontFamilies,
     // styles
     createStyle,
     getStyles,

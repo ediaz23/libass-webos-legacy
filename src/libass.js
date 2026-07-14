@@ -176,7 +176,7 @@ function cancelIdle (handle) {
  * @property {String} [legacyWasmUrl] URL of the WASM2JS bundle (legacy target).
  * @property {String} [subContent] Initial .ass text to load.
  * @property {Array<Uint8Array>} [fonts] Extra fonts to register.
- * @property {String} [fallbackFont=''] Family name to use when the .ass style references a missing font.
+ * @property {String} [fallbackFont='liberation sans'] Family name to use when the .ass style references a missing font.
  * @property {Number} [timeOffset=0] Seconds added to every incoming media time.
  * @property {Boolean} [debug=false] Enable verbose logging via `console.debug`.
  * @property {Number} [libassMemoryLimit=0] libass bitmap-cache byte limit (0 = default).
@@ -255,7 +255,7 @@ export default class LibAss {
         /** @type {Number|null} */
         this._prefetchHandle = null
 
-        this._boundResize = this.resize.bind(this)
+        this._boundResize = () => this.resize()
         this._boundRVFC = this._handleRVFC.bind(this)
         this._boundPause = this._handlePause.bind(this)
         this._boundSeeked = this._handleSeeked.bind(this)
@@ -320,7 +320,7 @@ export default class LibAss {
             height: this._canvas.height || 0,
             debug: this.debug,
             subContent: options.subContent || null,
-            fallbackFont: options.fallbackFont || '',
+            fallbackFont: options.fallbackFont || 'liberation sans',
             fonts: options.fonts || [],
             wasmUrl: options.wasmUrl || 'libass.wasm',
             legacyWasmUrl: options.legacyWasmUrl || null,
@@ -405,6 +405,8 @@ export default class LibAss {
         }
         video.addEventListener('pause', this._boundPause)
         video.addEventListener('seeked', this._boundSeeked)
+        video.addEventListener('resize', this._boundResize)
+        video.addEventListener('loadedmetadata', this._boundResize)
 
         if (typeof ResizeObserver !== 'undefined') {
             if (!this._ro) {
@@ -456,35 +458,38 @@ export default class LibAss {
      * @returns {Promise<void>}
      */
     async resize (width, height, top, left) {
-        const rect = this._resolveResizeRect(width, height, top, left)
-        if (rect) {
-            this._canvas.style.top = (rect.top || 0) + 'px'
-            this._canvas.style.left = (rect.left || 0) + 'px'
-            if (this._canvas.width !== rect.width) {
-                this._canvas.width = rect.width
+        let w = width || 0
+        let h = height || 0
+        let t = top || 0
+        let l = left || 0
+        let applied = false
+
+        if ((!w || !h) && this._video) {
+            if (this._video.videoWidth > 0 && this._video.videoHeight > 0) {
+                const pos = this._getVideoPosition()
+                w = pos.width || 0
+                h = pos.height || 0
+                l = pos.x
+                const gap = this._canvasParent
+                    ? this._canvasParent.getBoundingClientRect().top - this._video.getBoundingClientRect().top
+                    : 0
+                t = pos.y - gap
+                applied = w > 0 && h > 0
             }
-            if (this._canvas.height !== rect.height) {
-                this._canvas.height = rect.height
-            }
-            await this._callWorker('resize', { width: this._canvas.width, height: this._canvas.height })
+        } else if (w && h) {
+            applied = true
+        }
+
+        if (applied) {
+            this._canvas.width = w
+            this._canvas.height = h
+            this._canvas.style.width = w + 'px'
+            this._canvas.style.height = h + 'px'
+            this._canvas.style.top = t + 'px'
+            this._canvas.style.left = l + 'px'
+            await this._callWorker('resize', { width: w, height: h })
             this.clearCache()
         }
-    }
-
-    _resolveResizeRect (width, height, top, left) {
-        let rect = null
-        if (width && height) {
-            rect = { width, height, top: top || 0, left: left || 0 }
-        } else if (this._video) {
-            const pos = this._getVideoPosition()
-            rect = {
-                width: pos.width || 0,
-                height: pos.height || 0,
-                top: pos.y,
-                left: pos.x,
-            }
-        }
-        return rect
     }
 
     _getVideoPosition (width, height) {
@@ -492,8 +497,8 @@ export default class LibAss {
         let h = height || this._video.videoHeight
 
         const videoRatio = w / h
-        const offsetWidth = this._video.offsetWidth
-        const offsetHeight = this._video.offsetHeight
+        const offsetWidth = this._video.offsetWidth || w
+        const offsetHeight = this._video.offsetHeight || h
         const elementRatio = offsetWidth / offsetHeight
 
         w = offsetWidth
@@ -560,6 +565,14 @@ export default class LibAss {
      */
     async addFont (name, font) {
         await this._callWorker('addFont', { name, font })
+    }
+
+    /**
+     * List the family names of the fonts currently registered in libass.
+     * @returns {Promise<{families: Array<String>}>}
+     */
+    async getFontFamilies () {
+        return this._callWorker('getFontFamilies')
     }
 
     /**
@@ -664,8 +677,8 @@ export default class LibAss {
         const breakdown = { A: 0, B: 0, C: 0, D: 0 }
         for (let i = 0; i < events.length; i++) {
             const event = events[i]
-            const start = (event.Start || 0) / 100
-            const duration = (event.Duration || 0) / 100
+            const start = (event.Start || 0) / 1000
+            const duration = (event.Duration || 0) / 1000
             const end = start + duration
             const text = event.Text || ''
             const effect = event.Effect || ''
@@ -680,7 +693,17 @@ export default class LibAss {
                 samples: this._buildSamples(type, start, end),
             })
         }
-        this._log.info('plans built', { total: events.length, ...breakdown })
+        const sample = this._plans.slice(0, 3).map(p => ({
+            i: p.index, t: p.type, start: p.start, end: p.end, samples: p.samples.length,
+        }))
+        const last = this._plans.length > 0 ? this._plans[this._plans.length - 1] : null
+        this._log.info('plans built', {
+            total: events.length,
+            ...breakdown,
+            firstFew: sample,
+            lastStart: last ? last.start : null,
+            lastEnd: last ? last.end : null,
+        })
     }
 
     _buildSamples (type, start, end) {
@@ -759,18 +782,43 @@ export default class LibAss {
         const list = raw.images || []
         for (let i = 0; i < list.length; i++) {
             const img = list[i]
-            if (img && img.image) {
-                const pixels = img.image instanceof Uint8Array
+            if (img && img.image && img.w > 0 && img.h > 0) {
+                const mask = img.image instanceof Uint8Array
                     ? img.image
                     : new Uint8Array(img.image)
-                const clamped = new Uint8ClampedArray(
-                    pixels.buffer, pixels.byteOffset, pixels.byteLength
-                )
-                const bitmap = await createImageBitmap(new ImageData(clamped, img.w, img.h))
+                const color = (img.color || 0) >>> 0
+                const r = (color >>> 24) & 0xFF
+                const g = (color >>> 16) & 0xFF
+                const b = (color >>> 8) & 0xFF
+                const opacity = (255 - (color & 0xFF)) / 255
+                const rgba = new Uint8ClampedArray(img.w * img.h * 4)
+                if (opacity > 0) {
+                    for (let y = 0; y < img.h; y++) {
+                        const rowStart = y * img.stride
+                        const outStart = y * img.w * 4
+                        for (let x = 0; x < img.w; x++) {
+                            const alphaByte = mask[rowStart + x]
+                            if (alphaByte !== 0) {
+                                const idx = outStart + x * 4
+                                rgba[idx] = r
+                                rgba[idx + 1] = g
+                                rgba[idx + 2] = b
+                                rgba[idx + 3] = Math.round(alphaByte * opacity)
+                            }
+                        }
+                    }
+                }
+                const bitmap = await createImageBitmap(new ImageData(rgba, img.w, img.h))
                 images.push({ x: img.x, y: img.y, w: img.w, h: img.h, bitmap })
                 bytes += img.w * img.h * 4
             }
         }
+        this._log.debug('entry built', {
+            time: raw.time,
+            rawImages: list.length,
+            bitmaps: images.length,
+            bytes,
+        })
         return {
             images,
             width: raw.width,
@@ -847,14 +895,20 @@ export default class LibAss {
 
     _drawRenderResult (entry) {
         this._clearCanvas()
+        let drawn = 0
         if (entry && entry.images && entry.images.length) {
             for (let i = 0; i < entry.images.length; i++) {
                 const img = entry.images[i]
                 if (img && img.bitmap) {
                     this._ctx.drawImage(img.bitmap, img.x, img.y)
+                    drawn++
                 }
             }
         }
+        this._log.debug('draw', {
+            drawn,
+            canvas: `${this._canvas.width}x${this._canvas.height}`,
+        })
     }
 
     _clearCanvas () {
@@ -956,6 +1010,8 @@ export default class LibAss {
         if (this._video) {
             this._video.removeEventListener('pause', this._boundPause)
             this._video.removeEventListener('seeked', this._boundSeeked)
+            this._video.removeEventListener('resize', this._boundResize)
+            this._video.removeEventListener('loadedmetadata', this._boundResize)
             if (this._ro) {
                 this._ro.unobserve(this._video)
             }

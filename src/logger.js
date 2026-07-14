@@ -11,6 +11,26 @@ const PREFIX = '[libass]'
  * @property {(...args: any[]) => void} debug
  */
 
+function toPrintable (value) {
+    let out = value
+    if (value && typeof value === 'object') {
+        try {
+            out = JSON.stringify(value)
+        } catch (_e) {
+            out = String(value)
+        }
+    }
+    return out
+}
+
+function formatArgs (args) {
+    const out = []
+    for (let i = 0; i < args.length; i++) {
+        out.push(toPrintable(args[i]))
+    }
+    return out
+}
+
 /**
  * @param {String} scope Short label shown after the shared prefix.
  * @param {() => Boolean} isDebug Called on every `debug()` invocation.
@@ -20,17 +40,17 @@ export function createLogger (scope, isDebug) {
     const label = PREFIX + ' ' + scope
     return {
         info: function (...args) {
-            console.log(label, ...args)
+            console.log(label, ...formatArgs(args))
         },
         warn: function (...args) {
-            console.warn(label, ...args)
+            console.warn(label, ...formatArgs(args))
         },
         error: function (...args) {
-            console.error(label, ...args)
+            console.error(label, ...formatArgs(args))
         },
         debug: function (...args) {
             if (isDebug()) {
-                console.debug(label, ...args)
+                console.debug(label, ...formatArgs(args))
             }
         },
     }

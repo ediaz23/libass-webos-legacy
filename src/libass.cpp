@@ -1,10 +1,13 @@
 #include <ass/ass.h>
 #include <emscripten/bind.h>
+#include <ft2build.h>
+#include FT_FREETYPE_H
 
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <vector>
 
 struct RenderResult {
     int x = 0;
@@ -38,6 +41,8 @@ public:
         library_ = ass_library_init();
         if (!library_) return;
 
+        ass_set_extract_fonts(library_, 1);
+
         renderer_ = ass_renderer_init(library_);
         if (!renderer_) return;
 
@@ -45,8 +50,7 @@ public:
         ass_set_storage_size(renderer_, width_, height_);
         ass_set_use_margins(renderer_, useMargins ? 1 : 0);
 
-        const char* font = defaultFont.empty() ? nullptr : defaultFont.c_str();
-        ass_set_fonts(renderer_, font, "sans-serif", 1, nullptr, 1);
+        ass_set_fonts(renderer_, nullptr, defaultFont.c_str(), 0, nullptr, 1);
     }
 
     ~LibassBridge() {
@@ -108,12 +112,23 @@ public:
     void setDefaultFont(const std::string& defaultFont) {
         if (!renderer_) return;
 
-        const char* font = defaultFont.empty() ? nullptr : defaultFont.c_str();
-        ass_set_fonts(renderer_, font, "sans-serif", 1, nullptr, 1);
+        ass_set_fonts(renderer_, nullptr, defaultFont.c_str(), 0, nullptr, 1);
     }
 
     bool addFont(const std::string& name, uintptr_t dataPtr, int dataSize) {
         if (!library_ || dataPtr == 0 || dataSize <= 0) return false;
+
+        FT_Library ft;
+        if (FT_Init_FreeType(&ft) == 0) {
+            FT_Face face;
+            if (FT_New_Memory_Face(ft, reinterpret_cast<const FT_Byte*>(dataPtr), dataSize, 0, &face) == 0) {
+                if (face->family_name) {
+                    fontFamilies_.push_back(std::string(face->family_name));
+                }
+                FT_Done_Face(face);
+            }
+            FT_Done_FreeType(ft);
+        }
 
         ass_add_font(
             library_,
@@ -123,6 +138,10 @@ public:
         );
 
         return true;
+    }
+
+    std::vector<std::string> getFontFamilies() const {
+        return fontFamilies_;
     }
 
     int getEventCount() const {
@@ -303,6 +322,7 @@ private:
     int width_;
     int height_;
     int lastChange_;
+    std::vector<std::string> fontFamilies_;
 };
 
 static std::string safeStr(const char* s) {
@@ -381,6 +401,8 @@ static void setText(ASS_Event& e, const std::string& value) {
 }
 
 EMSCRIPTEN_BINDINGS(LIBASS_BRIDGE) {
+    emscripten::register_vector<std::string>("VectorString");
+
     emscripten::class_<RenderResult>("RenderResult")
         .property("x", &RenderResult::x)
         .property("y", &RenderResult::y)
@@ -440,6 +462,7 @@ EMSCRIPTEN_BINDINGS(LIBASS_BRIDGE) {
             .function("quitLibrary", &LibassBridge::quitLibrary)
             // fonts
             .function("addFont", &LibassBridge::addFont)
+            .function("getFontFamilies", &LibassBridge::getFontFamilies)
             .function("setDefaultFont", &LibassBridge::setDefaultFont)
             // track / memory
             .function("createTrackMem", &LibassBridge::createTrackMem)
