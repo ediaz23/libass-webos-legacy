@@ -4,10 +4,13 @@
     "description": "A lightweight ASS subtitle rendering pipeline for legacy LG webOS browsers, built around libass with event-driven caching and performance-focused scheduling.",
     "scripts": {
         "lint": "npx eslint --ext .js ./src",
-        "types": "npx tsc",
+        "types": "rm -rf dist/types && npx tsc",
         "webpack": "npm run webpack-modern && npm run webpack-legacy",
         "webpack-modern": "JAS_TARGER=modern webpack --config webpack/modern/webpack.modern.prod.cjs",
         "webpack-legacy": "JAS_TARGER=legacy webpack --config webpack/legacy/webpack.legacy.prod.cjs",
+        "clean": "./build.sh all clean",
+        "clean-libs": "./build.sh all clean-libs",
+        "clean-js": "./build.sh all clean-js",
         "test": "echo \"Error: no test specified\" && exit 1"
     },
     "engines": {
