@@ -79,6 +79,7 @@ function(ep_meson name srcdir)
                                 --prefix "${PREFIX_DIR}"
                                 --libdir "lib"
                                 --default-library=static
+                                -Db_lto=true
                                 ${extra_setup_args}
         BUILD_COMMAND
             ${CMAKE_COMMAND} -E env ${_env}
@@ -102,6 +103,7 @@ function(ep_cmake name srcdir)
             -DCMAKE_INSTALL_PREFIX=${PREFIX_DIR}
             -DBUILD_SHARED_LIBS=OFF
             -DCMAKE_POSITION_INDEPENDENT_CODE=ON
+            -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON
             ${extra_cmake_args}
         BUILD_COMMAND
             ${CMAKE_COMMAND} --build "${SUPERBUILD_DIR}/${name}"
@@ -164,6 +166,8 @@ ep_meson(harfbuzz_ep "${PATH_HARFBUZZ}"
     -Ddocs=disabled
     -Ddoc_tests=false
     -Dutilities=disabled
+    -Dc_args=-DHB_NO_MT
+    "-Dcpp_args=-DHB_NO_MT -Wno-nontrivial-memcall"
 )
 add_dependencies(harfbuzz_ep freetype_ep fribidi_ep)
 
@@ -199,6 +203,7 @@ set(PERFORMANCE_ARGS
     -s DISABLE_EXCEPTION_CATCHING=1
     -s TEXTDECODER=1
     --no-heap-copy
+    -flto
     -fno-exceptions
 )
 
