@@ -253,7 +253,7 @@ function(add_libass_wasm_target target_name out_js min_chrome modern debug_build
             -s EXPORTED_RUNTIME_METHODS=[\"getTempRet0\",\"setTempRet0\"]
             -s IMPORTED_MEMORY=1
             -s MIN_CHROME_VERSION=${min_chrome}
-            -s ENVIRONMENT=web,worker
+            -s ENVIRONMENT=worker
             -s EXIT_RUNTIME=0
             -s WASM_BIGINT=0
             -s ALLOW_MEMORY_GROWTH=1
@@ -272,37 +272,47 @@ function(add_libass_wasm_target target_name out_js min_chrome modern debug_build
 endfunction()
 
 # ===== Targets =====
-add_libass_wasm_target(
-    libass_modern_min
-    "${DIST_JS_DIR}/modern/worker.min.js"
-    68
-    TRUE
-    FALSE
-)
+# TARGET_MODE gates which wasm targets are declared, so the CMake state in the
+# modern container never mentions legacy targets and vice versa.
+if(NOT DEFINED TARGET_MODE)
+    message(FATAL_ERROR "TARGET_MODE must be set (modern|legacy).")
+endif()
 
-add_libass_wasm_target(
-    libass_modern_debug
-    "${DIST_JS_DIR}/modern/worker.debug.js"
-    68
-    TRUE
-    TRUE
-)
+if(TARGET_MODE STREQUAL "modern")
+    add_libass_wasm_target(
+        libass_modern_min
+        "${DIST_JS_DIR}/modern/worker.min.js"
+        68
+        TRUE
+        FALSE
+    )
 
-add_libass_wasm_target(
-    libass_legacy_min
-    "${DIST_JS_DIR}/legacy/worker.min.js"
-    38
-    FALSE
-    FALSE
-)
+    add_libass_wasm_target(
+        libass_modern_debug
+        "${DIST_JS_DIR}/modern/worker.debug.js"
+        68
+        TRUE
+        TRUE
+    )
+elseif(TARGET_MODE STREQUAL "legacy")
+    add_libass_wasm_target(
+        libass_legacy_min
+        "${DIST_JS_DIR}/legacy/worker.min.js"
+        38
+        FALSE
+        FALSE
+    )
 
-add_libass_wasm_target(
-    libass_legacy_debug
-    "${DIST_JS_DIR}/legacy/worker.debug.js"
-    38
-    FALSE
-    TRUE
-)
+    add_libass_wasm_target(
+        libass_legacy_debug
+        "${DIST_JS_DIR}/legacy/worker.debug.js"
+        38
+        FALSE
+        TRUE
+    )
+else()
+    message(FATAL_ERROR "TARGET_MODE must be 'modern' or 'legacy' (got '${TARGET_MODE}').")
+endif()
 
 message(STATUS "Libraries prefix: ${PREFIX_DIR}")
 message(STATUS "ExternalProject meta: ${EP_META_DIR}")

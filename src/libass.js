@@ -400,6 +400,14 @@ export default class LibAss {
         this._detachVideoListeners()
         this._video = video
 
+        // Move the auto-created canvas next to the new video. Needed when the
+        // previous video was removed from DOM (React unmount) and we get a new
+        // one via setNewContext; otherwise the overlay stays orphaned.
+        if (this._canvasParent && video.parentNode &&
+            this._canvasParent.previousElementSibling !== video) {
+            video.insertAdjacentElement('afterend', this._canvasParent)
+        }
+
         if (typeof video.requestVideoFrameCallback === 'function') {
             this._rvfcHandle = video.requestVideoFrameCallback(this._boundRVFC)
         }
