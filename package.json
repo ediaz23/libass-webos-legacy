@@ -39,13 +39,15 @@
             "default": "./dist/legacy/libass.debug.js"
         },
         "./legacy/*": "./dist/legacy/*",
-        "./modern/*": "./dist/modern/*"
+        "./modern/*": "./dist/modern/*",
+        "./default-font": "./default.woff2"
     },
     "files": [
         "dist",
         "LICENSE",
         "THIRD_PARTY_LICENSES",
-        "README.md"
+        "README.md",
+        "default.woff2"
     ],
     "keywords": [
         "libass",
