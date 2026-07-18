@@ -48,6 +48,26 @@ def read_custom_name(fp, section_size):
     return name, consumed
 
 
+# Per wasm-tools target_features spec:
+#   0x2B '+' = used, 0x2D '-' = disallowed, 0x3D '=' = required.
+FEATURE_PREFIX = {0x2B: "used", 0x2D: "disallowed", 0x3D: "required"}
+
+
+def read_target_features(fp, body_size):
+    # Layout: varuint count, then count entries of {prefix:u8, name-len:leb, name}.
+    count = read_leb(fp)
+    features = []
+    i = 0
+    while i < count:
+        prefix_byte = fp.read(1)[0]
+        prefix_label = FEATURE_PREFIX.get(prefix_byte, f"?({prefix_byte:#x})")
+        name_len = read_leb(fp)
+        name = fp.read(name_len).decode("utf-8", errors="replace")
+        features.append((prefix_label, name))
+        i += 1
+    return features
+
+
 def main(argv):
     exit_code = 0
     if len(argv) != 2:
@@ -64,6 +84,7 @@ def main(argv):
                 exit_code = 1
             else:
                 keep_going = True
+                pending_features = []
                 while keep_going:
                     marker = f.tell()
                     sid_byte = f.read(1)
@@ -79,14 +100,24 @@ def main(argv):
                         if sid == 0:
                             name, consumed = read_custom_name(f, sz)
                             extra = f"  name='{name}'"
-                            remaining = sz - consumed
-                            f.seek(remaining, 1)
+                            if name == "target_features":
+                                pending_features = read_target_features(
+                                    f, sz - consumed
+                                )
+                            # Seek to the end of the section regardless of
+                            # how much of the body we read.
+                            f.seek(body_start + sz)
                         else:
                             f.seek(sz, 1)
                         print(
                             f"  @{marker:>7}  id={sid:>2}  {label:<10}"
                             f"  size={sz}{extra}{tag}"
                         )
+                if pending_features:
+                    print()
+                    print("target_features (LLVM-declared):")
+                    for prefix, name in pending_features:
+                        print(f"  {prefix:<10}  {name}")
     sys.exit(exit_code)
 
 

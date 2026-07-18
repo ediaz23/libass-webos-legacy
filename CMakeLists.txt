@@ -35,14 +35,18 @@ if(NOT EXISTS "${EMSCRIPTEN_CMAKE_TOOLCHAIN}")
 endif()
 
 # ===== Dep compile flags =====
-# Every dep must compile with the same MVP-only feature set as the final link.
-# The -mno-* group forces LLVM's wasm backend to omit post-MVP instructions
-# (bulk memory, sign-ext, ...); without them Chromium 68 rejects the .wasm.
-# MIN_CHROME_VERSION on the link doesn't rewrite already-emitted .o files.
+# Shared flags for every dep. Verified with `make inspect-wasm`: removing any
+# of the -mno-* or -fno-exceptions triggers a post-MVP section (DataCount /
+# Tag / etc.) that Chromium 68 rejects at load time. MIN_CHROME_VERSION on
+# the final link doesn't rewrite already-emitted .o files.
 set(WASM_COMMON_FLAGS
     -O3
     -flto                         # link-time optimization across dep .o files
-    -fno-exceptions               # no exception handling → no Tag section
+    -fno-exceptions               # avoids Tag section (ID 13)
+    -mno-bulk-memory              # avoids DataCount section (ID 12)
+    -mno-sign-ext                 # forbid post-MVP sign-extension ops
+    -mno-nontrapping-fptoint      # forbid non-trapping fp→int conversions
+    -mno-reference-types          # forbid externref / funcref
 )
 set(WASM_CXX_ONLY_FLAGS -fno-rtti)     # no C++ RTTI (saves size, no dynamic_cast)
 
@@ -153,8 +157,9 @@ set(PATH_LIBASS     "${DEPS_DIR}/libass")
 
 # ===== Patches =====
 # harfbuzz's meson.build unconditionally probes for pthreads on non-windows
-# hosts and appends -pthread, which clang refuses to combine with -mno-* MVP
-# flags. Skip the probe on emscripten (we already compile with -DHB_NO_MT).
+# hosts and adds -pthread. clang refuses to combine that with -mno-bulk-memory
+# / -mno-sign-ext, so we patch out the probe on emscripten (HB_NO_MT already
+# disables threading at compile time).
 apply_patch_if_missing(
     "${PATH_HARFBUZZ}/meson.build"
     "system\\(\\) != 'emscripten'"
