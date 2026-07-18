@@ -8,8 +8,8 @@ TARGET="${1:-all}"
 MODE="${2:-full}"
 
 MODERN_IMAGE=libass-webos-legacy
-LEGACY_IMAGE=libass-webos-legacy-old
-MODERN_EMSDK=4.0.13
+LEGACY_IMAGE=libass-webos-legacy
+MODERN_EMSDK=3.1.40
 LEGACY_EMSDK=3.1.40
 
 usage () {
