@@ -34,8 +34,56 @@ if(NOT EXISTS "${EMSCRIPTEN_CMAKE_TOOLCHAIN}")
     message(FATAL_ERROR "Emscripten CMake toolchain not found at: ${EMSCRIPTEN_CMAKE_TOOLCHAIN}")
 endif()
 
-# Meson cross-file so all meson-based deps (fribidi, freetype, harfbuzz, libass)
-# emit wasm object files instead of native x86.
+# ===== Dep compile flags =====
+# Single source of truth for the flags every dep compiles with. Each build
+# system reads them differently, so they get exported three ways below.
+#
+# The -mno-* group forces LLVM's wasm backend to emit MVP-only instructions.
+# Without them emcc emits DataCount (bulk memory) and similar post-MVP
+# sections into the .wasm, which Chromium 68 rejects at load time. Setting
+# MIN_CHROME_VERSION=68 on the final link is not enough — it doesn't rewrite
+# instructions already baked into the dep .o files.
+set(WASM_COMMON_FLAGS
+    -O3
+    -flto
+    -fno-exceptions
+    -s USE_PTHREADS=0
+    -mno-bulk-memory
+    -mno-sign-ext
+    -mno-nontrapping-fptoint
+    -mno-reference-types
+    -mno-multivalue
+)
+set(WASM_CXX_ONLY_FLAGS -fno-rtti)
+
+# Space-separated strings for CMake / autotools env.
+string(REPLACE ";" " " WASM_C_FLAGS   "${WASM_COMMON_FLAGS}")
+set(_wasm_cxx_list ${WASM_CXX_ONLY_FLAGS} ${WASM_COMMON_FLAGS})
+string(REPLACE ";" " " WASM_CXX_FLAGS "${_wasm_cxx_list}")
+
+# Meson-style list ('a', 'b', ...) for the cross-file.
+function(_join_meson_list out_var)
+    set(_items "")
+    foreach(_flag ${ARGN})
+        if(_items STREQUAL "")
+            set(_items "'${_flag}'")
+        else()
+            set(_items "${_items}, '${_flag}'")
+        endif()
+    endforeach()
+    set(${out_var} "${_items}" PARENT_SCOPE)
+endfunction()
+
+_join_meson_list(_meson_c_args ${WASM_COMMON_FLAGS})
+_join_meson_list(_meson_cpp_args ${WASM_CXX_ONLY_FLAGS} ${WASM_COMMON_FLAGS})
+_join_meson_list(_meson_link_args -flto -fno-exceptions
+    -mno-bulk-memory -mno-sign-ext -mno-nontrapping-fptoint
+    -mno-reference-types -mno-multivalue)
+
+# Meson cross-file so all meson-based deps (fribidi, freetype, harfbuzz,
+# libass) emit wasm object files instead of native x86. The [built-in options]
+# section is the meson equivalent of exporting CFLAGS/CXXFLAGS in autotools —
+# meson with a cross-file ignores env CFLAGS.
 set(MESON_CROSS_FILE "${CMAKE_BINARY_DIR}/emscripten-cross.ini")
 file(WRITE "${MESON_CROSS_FILE}"
 "[binaries]
@@ -44,21 +92,28 @@ cpp = 'em++'
 ar = 'emar'
 ranlib = 'emranlib'
 strip = 'emstrip'
-pkgconfig = 'pkg-config'
+pkg-config = 'pkg-config'
 
 [host_machine]
 system = 'emscripten'
 cpu_family = 'wasm32'
 cpu = 'wasm32'
 endian = 'little'
+
+[built-in options]
+c_args        = [${_meson_c_args}]
+cpp_args      = [${_meson_cpp_args}]
+c_link_args   = [${_meson_link_args}]
+cpp_link_args = [${_meson_link_args}]
 ")
 
-# ===== Common env =====
 set(_env
     "PKG_CONFIG_PATH=${PREFIX_DIR}/lib/pkgconfig:${PREFIX_DIR}/lib64/pkgconfig"
     "EM_PKG_CONFIG_PATH=${PREFIX_DIR}/lib/pkgconfig:${PREFIX_DIR}/lib64/pkgconfig"
     "CMAKE_PREFIX_PATH=${PREFIX_DIR}"
     "PATH=${PREFIX_DIR}/bin:$ENV{PATH}"
+    "CFLAGS=${WASM_C_FLAGS}"
+    "CXXFLAGS=${WASM_CXX_FLAGS}"
 )
 
 # ===== Helpers =====
@@ -79,6 +134,7 @@ function(ep_meson name srcdir)
                                 --prefix "${PREFIX_DIR}"
                                 --libdir "lib"
                                 --default-library=static
+                                --buildtype=release
                                 -Db_lto=true
                                 ${extra_setup_args}
         BUILD_COMMAND
@@ -104,6 +160,8 @@ function(ep_cmake name srcdir)
             -DBUILD_SHARED_LIBS=OFF
             -DCMAKE_POSITION_INDEPENDENT_CODE=ON
             -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON
+            -DCMAKE_C_FLAGS=${WASM_C_FLAGS}
+            -DCMAKE_CXX_FLAGS=${WASM_CXX_FLAGS}
             ${extra_cmake_args}
         BUILD_COMMAND
             ${CMAKE_COMMAND} --build "${SUPERBUILD_DIR}/${name}"
@@ -122,7 +180,7 @@ function(ep_autotools name srcdir)
             ${CMAKE_COMMAND} -E make_directory "${SUPERBUILD_DIR}/${name}"
             COMMAND ${CMAKE_COMMAND} -E chdir "${srcdir}" ./bootstrap
             COMMAND ${CMAKE_COMMAND} -E chdir "${SUPERBUILD_DIR}/${name}"
-                ${CMAKE_COMMAND} -E env ${_env} CFLAGS=-fPIC
+                ${CMAKE_COMMAND} -E env ${_env}
                 "${srcdir}/configure" --prefix=${PREFIX_DIR} --enable-static --disable-shared
         BUILD_COMMAND
             ${CMAKE_COMMAND} -E env ${_env} make -C "${SUPERBUILD_DIR}/${name}"
@@ -145,7 +203,11 @@ ep_cmake(brotli_ep "${PATH_BROTLI}")
 ep_meson(freetype_ep "${PATH_FREETYPE}"
     -Dbrotli=enabled
     -Dbzip2=disabled
-    -Dharfbuzz=enabled
+    # harfbuzz here would trigger meson to fetch harfbuzz as a subproject
+    # (with its own default flags including -pthread that clash with the
+    # -mno-* MVP feature set). libass links its own harfbuzz_ep, so freetype
+    # doesn't need it — hb-freetype integration lives in harfbuzz_ep.
+    -Dharfbuzz=disabled
     -Dmmap=disabled
     -Dpng=disabled
     -Dtests=disabled
@@ -166,8 +228,11 @@ ep_meson(harfbuzz_ep "${PATH_HARFBUZZ}"
     -Ddocs=disabled
     -Ddoc_tests=false
     -Dutilities=disabled
-    -Dc_args=-DHB_NO_MT
-    "-Dcpp_args=-DHB_NO_MT -Wno-nontrivial-memaccess"
+    # meson replaces (not appends) c_args/cpp_args when passed on the CLI, so
+    # the global flags from the cross-file must be repeated here — otherwise
+    # harfbuzz would compile with only -DHB_NO_MT and lose -fno-exceptions etc.
+    "-Dc_args=${WASM_C_FLAGS} -DHB_NO_MT"
+    "-Dcpp_args=${WASM_CXX_FLAGS} -DHB_NO_MT -Wno-nontrivial-memaccess"
 )
 add_dependencies(harfbuzz_ep freetype_ep fribidi_ep)
 
@@ -206,6 +271,7 @@ set(PERFORMANCE_ARGS
     --no-heap-copy
     -flto
     -fno-exceptions
+    --memory-init-file 0
 )
 
 set(SIZE_ARGS
