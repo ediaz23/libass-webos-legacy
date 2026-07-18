@@ -1,0 +1,18 @@
+Skip meson's threads probe on emscripten.
+
+meson resolves `dependency('threads')` even in emcc cross-builds and appends
+`-pthread` to every compile line. clang rejects that when the wasm target is
+restricted to MVP features (`-mno-bulk-memory`, `-mno-sign-ext`, ...). We
+compile with `-DHB_NO_MT` anyway, so skipping the probe is safe.
+
+--- a/meson.build
++++ b/meson.build
+@@ -365,7 +365,7 @@ endif
+
+ # threads
+ thread_dep = null_dep
+-if host_machine.system() != 'windows'
++if host_machine.system() != 'windows' and host_machine.system() != 'emscripten'
+   thread_dep = dependency('threads', required: false)
+
+   if thread_dep.found()

@@ -35,85 +35,39 @@ if(NOT EXISTS "${EMSCRIPTEN_CMAKE_TOOLCHAIN}")
 endif()
 
 # ===== Dep compile flags =====
-# Single source of truth for the flags every dep compiles with. Each build
-# system reads them differently, so they get exported three ways below.
-#
-# The -mno-* group forces LLVM's wasm backend to emit MVP-only instructions.
-# Without them emcc emits DataCount (bulk memory) and similar post-MVP
-# sections into the .wasm, which Chromium 68 rejects at load time. Setting
-# MIN_CHROME_VERSION=68 on the final link is not enough — it doesn't rewrite
-# instructions already baked into the dep .o files.
+# Every dep must compile with the same MVP-only feature set as the final link.
+# The -mno-* group forces LLVM's wasm backend to omit post-MVP instructions
+# (bulk memory, sign-ext, ...); without them Chromium 68 rejects the .wasm.
+# MIN_CHROME_VERSION on the link doesn't rewrite already-emitted .o files.
 set(WASM_COMMON_FLAGS
     -O3
-    -flto
-    -fno-exceptions
-    -s USE_PTHREADS=0
-    -mno-bulk-memory
-    -mno-sign-ext
-    -mno-nontrapping-fptoint
-    -mno-reference-types
-    -mno-multivalue
+    -flto                         # link-time optimization across dep .o files
+    -fno-exceptions               # no exception handling → no Tag section
 )
-set(WASM_CXX_ONLY_FLAGS -fno-rtti)
+set(WASM_CXX_ONLY_FLAGS -fno-rtti)     # no C++ RTTI (saves size, no dynamic_cast)
 
-# Space-separated strings for CMake / autotools env.
+# CMake-style space-separated strings (for CMAKE_C_FLAGS in ep_cmake).
 string(REPLACE ";" " " WASM_C_FLAGS   "${WASM_COMMON_FLAGS}")
 set(_wasm_cxx_list ${WASM_CXX_ONLY_FLAGS} ${WASM_COMMON_FLAGS})
 string(REPLACE ";" " " WASM_CXX_FLAGS "${_wasm_cxx_list}")
 
-# Meson-style list ('a', 'b', ...) for the cross-file.
-function(_join_meson_list out_var)
-    set(_items "")
-    foreach(_flag ${ARGN})
-        if(_items STREQUAL "")
-            set(_items "'${_flag}'")
-        else()
-            set(_items "${_items}, '${_flag}'")
-        endif()
-    endforeach()
-    set(${out_var} "${_items}" PARENT_SCOPE)
-endfunction()
-
-_join_meson_list(_meson_c_args ${WASM_COMMON_FLAGS})
-_join_meson_list(_meson_cpp_args ${WASM_CXX_ONLY_FLAGS} ${WASM_COMMON_FLAGS})
-_join_meson_list(_meson_link_args -flto -fno-exceptions
-    -mno-bulk-memory -mno-sign-ext -mno-nontrapping-fptoint
-    -mno-reference-types -mno-multivalue)
-
-# Meson cross-file so all meson-based deps (fribidi, freetype, harfbuzz,
-# libass) emit wasm object files instead of native x86. The [built-in options]
-# section is the meson equivalent of exporting CFLAGS/CXXFLAGS in autotools —
-# meson with a cross-file ignores env CFLAGS.
+# Meson cross-file — [built-in options] is the meson equivalent of CFLAGS;
+# with a cross-file, meson ignores env CFLAGS. Template lives in patches/
+# and is expanded by configure_file (@VAR@ substitution).
+string(REPLACE ";" "', '" MESON_C_ARGS   "'${WASM_COMMON_FLAGS}'")
+string(REPLACE ";" "', '" MESON_CPP_ARGS "'${_wasm_cxx_list}'")
 set(MESON_CROSS_FILE "${CMAKE_BINARY_DIR}/emscripten-cross.ini")
-file(WRITE "${MESON_CROSS_FILE}"
-"[binaries]
-c = 'emcc'
-cpp = 'em++'
-ar = 'emar'
-ranlib = 'emranlib'
-strip = 'emstrip'
-pkg-config = 'pkg-config'
-
-[host_machine]
-system = 'emscripten'
-cpu_family = 'wasm32'
-cpu = 'wasm32'
-endian = 'little'
-
-[built-in options]
-c_args        = [${_meson_c_args}]
-cpp_args      = [${_meson_cpp_args}]
-c_link_args   = [${_meson_link_args}]
-cpp_link_args = [${_meson_link_args}]
-")
+configure_file(
+    "${CMAKE_SOURCE_DIR}/patches/emscripten-cross.ini.in"
+    "${MESON_CROSS_FILE}"
+    @ONLY
+)
 
 set(_env
     "PKG_CONFIG_PATH=${PREFIX_DIR}/lib/pkgconfig:${PREFIX_DIR}/lib64/pkgconfig"
     "EM_PKG_CONFIG_PATH=${PREFIX_DIR}/lib/pkgconfig:${PREFIX_DIR}/lib64/pkgconfig"
     "CMAKE_PREFIX_PATH=${PREFIX_DIR}"
     "PATH=${PREFIX_DIR}/bin:$ENV{PATH}"
-    "CFLAGS=${WASM_C_FLAGS}"
-    "CXXFLAGS=${WASM_CXX_FLAGS}"
 )
 
 # ===== Helpers =====
@@ -134,8 +88,8 @@ function(ep_meson name srcdir)
                                 --prefix "${PREFIX_DIR}"
                                 --libdir "lib"
                                 --default-library=static
-                                --buildtype=release
-                                -Db_lto=true
+                                --buildtype=release   # meson default is debug (-O0)
+                                -Db_lto=true          # link-time optimization
                                 ${extra_setup_args}
         BUILD_COMMAND
             ${CMAKE_COMMAND} -E env ${_env}
@@ -160,7 +114,7 @@ function(ep_cmake name srcdir)
             -DBUILD_SHARED_LIBS=OFF
             -DCMAKE_POSITION_INDEPENDENT_CODE=ON
             -DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON
-            -DCMAKE_C_FLAGS=${WASM_C_FLAGS}
+            -DCMAKE_C_FLAGS=${WASM_C_FLAGS}      # cmake ignores env CFLAGS
             -DCMAKE_CXX_FLAGS=${WASM_CXX_FLAGS}
             ${extra_cmake_args}
         BUILD_COMMAND
@@ -171,23 +125,23 @@ function(ep_cmake name srcdir)
     )
 endfunction()
 
-function(ep_autotools name srcdir)
-    ExternalProject_Add(${name}
-        PREFIX         "${EP_META_DIR}/${name}"
-        SOURCE_DIR "${srcdir}"
-        BINARY_DIR "${SUPERBUILD_DIR}/${name}"
-        CONFIGURE_COMMAND
-            ${CMAKE_COMMAND} -E make_directory "${SUPERBUILD_DIR}/${name}"
-            COMMAND ${CMAKE_COMMAND} -E chdir "${srcdir}" ./bootstrap
-            COMMAND ${CMAKE_COMMAND} -E chdir "${SUPERBUILD_DIR}/${name}"
-                ${CMAKE_COMMAND} -E env ${_env}
-                "${srcdir}/configure" --prefix=${PREFIX_DIR} --enable-static --disable-shared
-        BUILD_COMMAND
-            ${CMAKE_COMMAND} -E env ${_env} make -C "${SUPERBUILD_DIR}/${name}"
-        INSTALL_COMMAND
-            ${CMAKE_COMMAND} -E env ${_env} make -C "${SUPERBUILD_DIR}/${name}" install
-        USES_TERMINAL_BUILD ON
-    )
+# Apply a patch to a dep's source tree, idempotently. Reads `srcfile` and
+# only invokes `patch` if `marker` is missing (patch not applied yet). The
+# patch's working directory is the parent of srcfile.
+function(apply_patch_if_missing srcfile marker patchfile)
+    file(READ "${srcfile}" _content)
+    if(NOT _content MATCHES "${marker}")
+        get_filename_component(_workdir "${srcfile}" DIRECTORY)
+        message(STATUS "Applying patch: ${patchfile}")
+        execute_process(
+            COMMAND patch -p1 -i "${patchfile}"
+            WORKING_DIRECTORY "${_workdir}"
+            RESULT_VARIABLE _rc
+        )
+        if(NOT _rc EQUAL 0)
+            message(FATAL_ERROR "patch failed (rc=${_rc}): ${patchfile}")
+        endif()
+    endif()
 endfunction()
 
 # ===== Paths inside lib/ =====
@@ -197,17 +151,23 @@ set(PATH_FRIBIDI    "${DEPS_DIR}/fribidi")
 set(PATH_HARFBUZZ "${DEPS_DIR}/harfbuzz")
 set(PATH_LIBASS     "${DEPS_DIR}/libass")
 
+# ===== Patches =====
+# harfbuzz's meson.build unconditionally probes for pthreads on non-windows
+# hosts and appends -pthread, which clang refuses to combine with -mno-* MVP
+# flags. Skip the probe on emscripten (we already compile with -DHB_NO_MT).
+apply_patch_if_missing(
+    "${PATH_HARFBUZZ}/meson.build"
+    "system\\(\\) != 'emscripten'"
+    "${CMAKE_SOURCE_DIR}/patches/harfbuzz-skip-emscripten-threads.patch"
+)
+
 # ===== Dependencies =====
 ep_cmake(brotli_ep "${PATH_BROTLI}")
 
 ep_meson(freetype_ep "${PATH_FREETYPE}"
     -Dbrotli=enabled
     -Dbzip2=disabled
-    # harfbuzz here would trigger meson to fetch harfbuzz as a subproject
-    # (with its own default flags including -pthread that clash with the
-    # -mno-* MVP feature set). libass links its own harfbuzz_ep, so freetype
-    # doesn't need it — hb-freetype integration lives in harfbuzz_ep.
-    -Dharfbuzz=disabled
+    -Dharfbuzz=disabled           # avoid meson fetching hb as a subproject (adds -pthread)
     -Dmmap=disabled
     -Dpng=disabled
     -Dtests=disabled
@@ -228,9 +188,8 @@ ep_meson(harfbuzz_ep "${PATH_HARFBUZZ}"
     -Ddocs=disabled
     -Ddoc_tests=false
     -Dutilities=disabled
-    # meson replaces (not appends) c_args/cpp_args when passed on the CLI, so
-    # the global flags from the cross-file must be repeated here — otherwise
-    # harfbuzz would compile with only -DHB_NO_MT and lose -fno-exceptions etc.
+    # -Dc_args= on the CLI REPLACES the cross-file's c_args (meson doesn't
+    # append), so the global flags must be repeated here.
     "-Dc_args=${WASM_C_FLAGS} -DHB_NO_MT"
     "-Dcpp_args=${WASM_CXX_FLAGS} -DHB_NO_MT -Wno-nontrivial-memaccess"
 )
