@@ -167,7 +167,7 @@ ep_meson(harfbuzz_ep "${PATH_HARFBUZZ}"
     -Ddoc_tests=false
     -Dutilities=disabled
     -Dc_args=-DHB_NO_MT
-    "-Dcpp_args=-DHB_NO_MT -Wno-nontrivial-memcall"
+    "-Dcpp_args=-DHB_NO_MT -Wno-nontrivial-memaccess"
 )
 add_dependencies(harfbuzz_ep freetype_ep fribidi_ep)
 
@@ -202,6 +202,7 @@ set(PERFORMANCE_ARGS
     -s INVOKE_RUN=0
     -s DISABLE_EXCEPTION_CATCHING=1
     -s TEXTDECODER=1
+    -s MINIMAL_RUNTIME_STREAMING_WASM_INSTANTIATION=1
     --no-heap-copy
     -flto
     -fno-exceptions
@@ -215,6 +216,7 @@ set(SIZE_ARGS
     -s HTML5_SUPPORT_DEFERRING_USER_SENSITIVE_REQUESTS=0
     -s INCOMING_MODULE_JS_API=[\"locateFile\",\"printErr\"]
     -s USE_SDL=0
+    -s MINIMAL_RUNTIME=1
 )
 
 function(add_libass_wasm_target target_name out_js min_chrome modern debug_build)
@@ -253,7 +255,7 @@ function(add_libass_wasm_target target_name out_js min_chrome modern debug_build
             -s EXPORTED_RUNTIME_METHODS=[\"getTempRet0\",\"setTempRet0\"]
             -s IMPORTED_MEMORY=1
             -s MIN_CHROME_VERSION=${min_chrome}
-            -s ENVIRONMENT=worker
+            -s ENVIRONMENT=web,worker
             -s EXIT_RUNTIME=0
             -s WASM_BIGINT=0
             -s ALLOW_MEMORY_GROWTH=1

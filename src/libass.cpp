@@ -20,8 +20,8 @@ struct RenderResult {
     RenderResult* next = nullptr;
 };
 
-static RenderResult* getNext(const RenderResult& r) {
-    return r.next;
+static RenderResult getNext(const RenderResult& r) {
+    return *r.next;
 }
 
 static uintptr_t getImage(const RenderResult& r) {
@@ -30,6 +30,8 @@ static uintptr_t getImage(const RenderResult& r) {
 
 class LibassBridge {
 public:
+    int renderCount = 0;
+
     LibassBridge(int width, int height, std::string defaultFont, bool useMargins)
         : library_(nullptr),
           renderer_(nullptr),
@@ -227,6 +229,7 @@ public:
     
     RenderResult* renderImage(double timeMs) {
         clearRenderResult();
+        renderCount = 0;
 
         if (!renderer_ || !track_) return nullptr;
 
@@ -261,6 +264,7 @@ public:
                 tail->next = node;
                 tail = node;
             }
+            ++renderCount;
         }
 
         renderHead_ = head;
@@ -410,7 +414,7 @@ EMSCRIPTEN_BINDINGS(LIBASS_BRIDGE) {
         .property("h", &RenderResult::h)
         .property("stride", &RenderResult::stride)
         .property("color", &RenderResult::color)
-        .property("next", &getNext, emscripten::allow_raw_pointers())
+        .property("next", &getNext)
         .property("image", &getImage);
 
     emscripten::class_<ASS_Style>("ASS_Style")
@@ -483,6 +487,7 @@ EMSCRIPTEN_BINDINGS(LIBASS_BRIDGE) {
             .function("removeStyle", &LibassBridge::removeStyle)
             .function("removeStyleOverride", &LibassBridge::removeStyleOverride)
             // render / canvas
+            .property("renderCount", &LibassBridge::renderCount)
             .function("renderImage", &LibassBridge::renderImage, emscripten::allow_raw_pointers())
             .function("freeRenderResult", &LibassBridge::freeRenderResult, emscripten::allow_raw_pointers())
             .function("resizeCanvas", &LibassBridge::resizeCanvas)

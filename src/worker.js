@@ -153,25 +153,25 @@ function render ({ time, force }) {
     const changed = !!force || state.libass.getLastChange() !== 0
     const images = []
 
-    if (head) {
-        let node = head
+    const count = head ? state.libass.renderCount : 0
+    let node = head
+    for (let i = 0; i < count; i++) {
+        const size = node.stride * node.h
+        const copy = new Uint8Array(size)
 
-        while (node) {
-            const size = node.stride * node.h
-            const copy = new Uint8Array(size)
+        copy.set(self.HEAPU8.subarray(node.image, node.image + size))
 
-            copy.set(self.HEAPU8.subarray(node.image, node.image + size))
+        images.push({
+            x: node.x,
+            y: node.y,
+            w: node.w,
+            h: node.h,
+            stride: node.stride,
+            color: node.color,
+            image: copy
+        })
 
-            images.push({
-                x: node.x,
-                y: node.y,
-                w: node.w,
-                h: node.h,
-                stride: node.stride,
-                color: node.color,
-                image: copy
-            })
-
+        if (i + 1 < count) {
             node = node.next
         }
     }
