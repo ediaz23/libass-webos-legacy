@@ -955,6 +955,64 @@ export default class LibAss {
         }
     }
 
+    /**
+     * Warm the cache with the next `count` cacheable events from `fromTime`.
+     * Resolves when those entries are in the cache, or when `timeoutMs` runs
+     * out — whichever comes first. Meant to be awaited before starting
+     * playback (initial load, seek) so the first sub doesn't miss.
+     *
+     * Non-cacheable (D) events are skipped: they can't be pre-rendered, they
+     * always run live at frame time. If there are fewer than `count` cacheable
+     * events left after `fromTime`, resolves with what could be gathered.
+     *
+     * Uses direct `_ensureCached` calls (worker burst) instead of the idle
+     * prefetch queue — the caller is blocking playback, idle scheduling would
+     * defeat the purpose.
+     *
+     * @param {Number} fromTime Seconds; falls back to current video time.
+     * @param {Number} [count=3]
+     * @param {Number} [timeoutMs=500]
+     * @returns {Promise<void>}
+     */
+    async awaitNextCacheableEvents (fromTime, count, timeoutMs) {
+        const n = count == null ? 3 : count
+        const timeout = timeoutMs == null ? 500 : timeoutMs
+        const t = (typeof fromTime === 'number' && isFinite(fromTime))
+            ? fromTime
+            : this._currentTimeSafe()
+        let cursor = this._planCursor
+        while (cursor > 0 && this._plans[cursor - 1].end > t) {
+            cursor--
+        }
+        while (cursor < this._plans.length && this._plans[cursor].end < t) {
+            cursor++
+        }
+        const targets = []
+        while (cursor < this._plans.length && targets.length < n) {
+            const plan = this._plans[cursor]
+            if (plan.type !== 'D' && plan.samples.length > 0) {
+                targets.push({ time: plan.samples[0], planIndex: plan.index })
+            }
+            cursor++
+        }
+        if (targets.length > 0) {
+            const jobs = targets.map(target => {
+                const key = this._buildRenderCacheKey(target.time, target.planIndex)
+                return this._renderCache.has(key)
+                    ? Promise.resolve()
+                    : this._ensureCached(target.time, target.planIndex).catch(() => {})
+            })
+            let timerId = null
+            const timer = new Promise(resolve => {
+                timerId = setTimeout(resolve, timeout)
+            })
+            await Promise.race([Promise.all(jobs), timer])
+            if (timerId != null) {
+                clearTimeout(timerId)
+            }
+        }
+    }
+
     _schedulePrefetch (fromTime) {
         this._clearPrefetch()
         const windowEnd = fromTime + this._prefetchForwardMs / 1000
