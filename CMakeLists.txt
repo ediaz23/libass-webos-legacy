@@ -231,7 +231,6 @@ set(PERFORMANCE_ARGS
     -s INVOKE_RUN=0
     -s DISABLE_EXCEPTION_CATCHING=1
     -s TEXTDECODER=1
-    -s MINIMAL_RUNTIME_STREAMING_WASM_INSTANTIATION=1
     --no-heap-copy
     -flto
     -fno-exceptions

@@ -29,7 +29,21 @@ async function loadModule (data) {
         },
     }
     if (data.wasmUrl) {
-        modernOptions.locateFile = () => data.wasmUrl
+        // webOS TV doesn't ship fetch(). Load the .wasm bytes via XHR and
+        modernOptions.wasm = await new Promise((resolve, reject) => {
+            const xhr = new XMLHttpRequest()
+            xhr.open('GET', data.wasmUrl, true)
+            xhr.responseType = 'arraybuffer'
+            xhr.onload = () => {
+                if (xhr.status === 200 || xhr.status === 0) {
+                    resolve(xhr.response)
+                } else {
+                    reject(new Error('wasm load failed: HTTP ' + xhr.status))
+                }
+            }
+            xhr.onerror = () => reject(new Error('wasm load network error'))
+            xhr.send(null)
+        })
     }
     module = await LibassModuleFactory(modernOptions)
     // #endif
