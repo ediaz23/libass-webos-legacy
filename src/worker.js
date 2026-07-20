@@ -163,7 +163,12 @@ function render ({ time, force }) {
     ensureReady()
 
     const startedAt = state.debug ? performance.now() : 0
-    const head = state.libass.renderImage(time * 1000)
+    // Round before the C++ cast: static_cast<long long> truncates, and the
+    // int → /1000 → *1000 round-trip drifts by fractions of a millisecond, so
+    // an event that starts at exactly `t` ms can end up rendered at t-1 ms
+    // where libass considers it not yet active. Symptom: the event is silently
+    // skipped even though its plan is picked.
+    const head = state.libass.renderImage(Math.round(time * 1000))
     const changed = !!force || state.libass.getLastChange() !== 0
     const images = []
 
