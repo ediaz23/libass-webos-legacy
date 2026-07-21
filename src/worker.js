@@ -1,10 +1,10 @@
 
 import { createLogger } from './logger.js'
 
-let LibassModuleFactory = {}
+let LibassWorker = {}
 // #if process.env.JAS_TARGER === 'modern'
 import _LibassModuleFactory from 'wasm'
-LibassModuleFactory = _LibassModuleFactory
+LibassWorker = _LibassModuleFactory
 // #endif
 
 const log = createLogger('worker', () => state.debug)
@@ -45,7 +45,7 @@ async function loadModule (data) {
             xhr.send(null)
         })
     }
-    module = await LibassModuleFactory(modernOptions)
+    module = await LibassWorker(modernOptions)
     // #endif
     // #if process.env.JAS_TARGER === 'legacy'
     module = (function () {
@@ -56,7 +56,8 @@ async function loadModule (data) {
         xhr.responseType = 'text'
         xhr.send(null)
         eval(xhr.response)
-        return { _malloc, _free, _fflush, }
+        Object.assign(LibassWorker, { _malloc, _free, _fflush, })
+        return LibassWorker
     })()
     // #endif
     return module
