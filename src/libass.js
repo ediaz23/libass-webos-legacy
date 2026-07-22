@@ -816,7 +816,7 @@ export default class LibAss {
                         }
                     }
                 }
-                const bitmap = await createImageBitmap(new ImageData(rgba, img.w, img.h))
+                const bitmap = await this._makeBitmap(rgba, img.w, img.h)
                 images.push({ x: img.x, y: img.y, w: img.w, h: img.h, bitmap })
                 bytes += img.w * img.h * 4
             }
@@ -834,6 +834,33 @@ export default class LibAss {
             time: raw.time,
             bytes: bytes || 1,
         }
+    }
+
+    /**
+     * Wrap an RGBA buffer in something `_drawRenderResult` can `drawImage`.
+     * Modern path: `createImageBitmap(new ImageData(rgba, w, h))` — one hop,
+     * GPU-backed on most engines. Legacy path (Chromium 38 on webOS 3 has no
+     * `createImageBitmap`, and its `ImageData` constructor doesn't accept an
+     * array): allocate the ImageData via `ctx.createImageData`, copy the
+     * bytes in with `data.set`, `putImageData` onto a throwaway canvas, and
+     * hand that canvas to `drawImage` (accepts HTMLCanvasElement).
+     */
+    async _makeBitmap (rgba, w, h) {
+        let bitmap
+        // #if process.env.JAS_TARGER === 'modern'
+        bitmap = await createImageBitmap(new ImageData(rgba, w, h))
+        // #endif
+        // #if process.env.JAS_TARGER === 'legacy'
+        const buf = document.createElement('canvas')
+        buf.width = w
+        buf.height = h
+        const ctx = buf.getContext('2d')
+        const imageData = ctx.createImageData(w, h)
+        imageData.data.set(rgba)
+        ctx.putImageData(imageData, 0, 0)
+        bitmap = buf
+        // #endif
+        return bitmap
     }
 
     async _ensureCached (planned, planIndex) {
