@@ -15,6 +15,13 @@ const DEFAULT_CLASS_C_SAMPLES_MIN = 3
 const DEFAULT_CLASS_C_SAMPLES_MAX = 8
 const DEFAULT_CLASS_C_MIN_INTERVAL_MS = 100
 
+/** Render key used while no event is active; the frame is a plain clear. */
+const EMPTY_RENDER_KEY = 'empty'
+/** Stands in as the last drawn entry when the canvas was cleared. */
+const EMPTY_ENTRY = { images: [], width: 0, height: 0, time: 0, bytes: 0 }
+/** Precedence used to pick a class for a group holding several events. */
+const CLASS_ORDER = { A: 0, B: 1, C: 2, D: 3 }
+
 /**
  * Sort an event into A/B/C/D based on its override tags. Precedence is
  * D > C > B > A — the first D-marker seen wins over any lighter classification.
@@ -75,13 +82,29 @@ function cancelIdle (handle) {
 }
 
 /**
- * A single event of the parsed .ass script after classification.
- * @typedef {Object} EventPlan
- * @property {Number} index Position of the event in the track's event list.
+ * One event of the parsed .ass script after classification, before grouping.
+ * @typedef {Object} PlannedEvent
  * @property {'A'|'B'|'C'|'D'} type Complexity class assigned by {@link classify}.
  * @property {Number} start Start time in seconds.
  * @property {Number} end End time in seconds.
- * @property {Array<Number>} samples Timestamps (seconds) at which this event is pre-rendered.
+ */
+
+/**
+ * A run of events that share screen time. Overlapping events are merged into
+ * one plan on purpose: the renderer snaps the clock to the plan's sample, so
+ * keeping them apart would freeze the frame at the first member's start and
+ * hide everything that joins later. The group's `samples` hold every instant
+ * at which the set of visible events changes, both entries and exits.
+ *
+ * Groups are disjoint and ascending, which is what lets
+ * {@link LibAss#_planForTime} walk them with a single cursor.
+ *
+ * @typedef {Object} EventPlan
+ * @property {Number} index Position of the group in the plan list.
+ * @property {'A'|'B'|'C'|'D'} type Highest class among the grouped events.
+ * @property {Number} start Earliest start among the grouped events, in seconds.
+ * @property {Number} end Latest end among the grouped events, in seconds.
+ * @property {Array<Number>} samples Ascending timestamps (seconds) at which the group is rendered.
  */
 
 /**
@@ -230,6 +253,10 @@ export default class LibAss {
         this._lastRendered = null
         /** @type {Number|null} */
         this._rvfcHandle = null
+        /** @type {Number} Ticket of the newest render; older ones stop drawing. */
+        this._renderToken = 0
+        /** @type {Boolean} */
+        this._destroyed = false
 
         /** @type {Array<EventPlan>} */
         this._plans = []
@@ -238,6 +265,8 @@ export default class LibAss {
 
         /** @type {LRUCache} */
         this._renderCache = null
+        /** @type {Map<String, Promise<RenderEntry>>} Renders already in flight, by cache key. */
+        this._inFlight = new Map()
 
         /** @type {Number} */
         this._cacheBytesBudget = DEFAULT_CACHE_BYTES
@@ -275,6 +304,7 @@ export default class LibAss {
         }
 
         this.debug = !!options.debug
+        this._destroyed = false
         this.timeOffset = options.timeOffset || 0
         this._onError = typeof options.onError === 'function' ? options.onError : null
         this._log.info('loading')
@@ -433,15 +463,44 @@ export default class LibAss {
             const t = metadata
                 ? metadata.mediaTime + this.timeOffset
                 : this._video.currentTime + this.timeOffset
-            await this.render(t)
-            this._rvfcHandle = this._video.requestVideoFrameCallback(this._boundRVFC)
+            try {
+                await this.render(t)
+            } catch (error) {
+                this._onRenderError(error)
+            }
+            // Re-arm even after a failure. Bailing out here would drop the
+            // callback for good and freeze the overlay on the last frame drawn.
+            if (this._video && !this._destroyed &&
+                typeof this._video.requestVideoFrameCallback === 'function') {
+                this._rvfcHandle = this._video.requestVideoFrameCallback(this._boundRVFC)
+            }
         }
+    }
+
+    /**
+     * Forget the last drawn frame so the next callback renders again instead
+     * of taking the failure as the current state.
+     * @param {Error|Event} error
+     */
+    _onRenderError (error) {
+        this._log.error('render failed', error && error.message ? error.message : error)
+        this._lastRenderKey = ''
+        this._lastRendered = null
+    }
+
+    /**
+     * Start a render from a synchronous listener without leaving the rejection
+     * unhandled.
+     * @param {Number} time
+     */
+    _renderSafe (time) {
+        this.render(time).catch(error => this._onRenderError(error))
     }
 
     _handlePause () {
         this._log.debug('pause')
         if (this._video) {
-            this.render(this._currentTimeSafe())
+            this._renderSafe(this._currentTimeSafe())
         }
     }
 
@@ -452,7 +511,7 @@ export default class LibAss {
         this._lastRenderKey = ''
         this._lastRendered = null
         if (this._video) {
-            this.render(this._currentTimeSafe())
+            this._renderSafe(this._currentTimeSafe())
         }
     }
 
@@ -683,30 +742,28 @@ export default class LibAss {
         this._planCursor = 0
 
         const breakdown = { A: 0, B: 0, C: 0, D: 0 }
+        /** @type {Array<PlannedEvent>} */
+        const entries = []
         for (let i = 0; i < events.length; i++) {
             const event = events[i]
             const start = (event.Start || 0) / 1000
             const duration = (event.Duration || 0) / 1000
-            const end = start + duration
-            const text = event.Text || ''
-            const effect = event.Effect || ''
-            const type = classify(text, effect)
+            const type = classify(event.Text || '', event.Effect || '')
             breakdown[type]++
-
-            this._plans.push({
-                index: i,
-                type,
-                start,
-                end,
-                samples: this._buildSamples(type, start, end),
-            })
+            entries.push({ type, start, end: start + duration })
         }
+        // The cursor walk needs ascending starts. libass returns the events in
+        // file order and nothing guarantees the track is sorted, so sort here.
+        entries.sort((a, b) => a.start - b.start)
+        this._plans = this._buildGroups(entries)
+
         const sample = this._plans.slice(0, 3).map(p => ({
             i: p.index, t: p.type, start: p.start, end: p.end, samples: p.samples.length,
         }))
         const last = this._plans.length > 0 ? this._plans[this._plans.length - 1] : null
         this._log.info('plans built', {
             total: events.length,
+            groups: this._plans.length,
             ...breakdown,
             firstFew: sample,
             lastStart: last ? last.start : null,
@@ -714,25 +771,118 @@ export default class LibAss {
         })
     }
 
-    _buildSamples (type, start, end) {
-        const out = []
-        if (type === 'C') {
-            const durationMs = Math.max((end - start) * 1000, 0)
-            const idealCount = Math.floor(durationMs / this._classCMinIntervalMs) + 1
-            const count = Math.max(
-                this._classCSamplesMin,
-                Math.min(this._classCSamplesMax, idealCount)
-            )
-            if (count <= 1 || end <= start) {
-                out.push(start)
+    /**
+     * Merge events that share screen time into disjoint, ascending groups and
+     * give each group its sample schedule.
+     * @param {Array<PlannedEvent>} entries Events sorted by ascending `start`.
+     * @returns {Array<EventPlan>}
+     */
+    _buildGroups (entries) {
+        /** @type {Array<{start: Number, end: Number, members: Array<PlannedEvent>}>} */
+        const groups = []
+        for (let i = 0; i < entries.length; i++) {
+            const entry = entries[i]
+            const current = groups.length > 0 ? groups[groups.length - 1] : null
+            // An event is on screen over [start, end), so touching bounds are
+            // not an overlap and start a new group.
+            if (current && entry.start < current.end) {
+                current.members.push(entry)
+                current.end = Math.max(current.end, entry.end)
             } else {
-                const step = (end - start) / (count - 1)
-                for (let i = 0; i < count; i++) {
-                    out.push(Math.round((start + step * i) * 1000) / 1000)
+                groups.push({ start: entry.start, end: entry.end, members: [entry] })
+            }
+        }
+
+        /** @type {Array<EventPlan>} */
+        const plans = []
+        for (let i = 0; i < groups.length; i++) {
+            const group = groups[i]
+            let type = 'A'
+            for (let m = 0; m < group.members.length; m++) {
+                if (CLASS_ORDER[group.members[m].type] > CLASS_ORDER[type]) {
+                    type = group.members[m].type
                 }
             }
-        } else {
+            plans.push({
+                index: i,
+                type,
+                start: group.start,
+                end: group.end,
+                samples: this._buildGroupSamples(group),
+            })
+        }
+        return plans
+    }
+
+    /**
+     * Every instant inside the group at which the visible set changes: each
+     * member's start (an event appears) and end (an event leaves), plus the
+     * intermediate steps of animated members. Times outside `[start, end)` are
+     * dropped — the cursor has already left the group there, so they would
+     * never be picked.
+     *
+     * A group holding one plain event collapses to `[start]`, which is exactly
+     * what the renderer used before grouping existed.
+     *
+     * @param {{start: Number, end: Number, members: Array<PlannedEvent>}} group
+     * @returns {Array<Number>}
+     */
+    _buildGroupSamples (group) {
+        const seen = new Set()
+        const samples = []
+        const add = (value) => {
+            const time = Math.round(value * 1000) / 1000
+            if (time >= group.start && time < group.end && !seen.has(time)) {
+                seen.add(time)
+                samples.push(time)
+            }
+        }
+
+        add(group.start)
+        for (let i = 0; i < group.members.length; i++) {
+            const member = group.members[i]
+            add(member.start)
+            add(member.end)
+            if (member.type === 'C') {
+                const steps = this._buildAnimatedSamples(member.start, member.end)
+                for (let s = 0; s < steps.length; s++) {
+                    add(steps[s])
+                }
+            }
+        }
+        // A zero-duration group leaves nothing inside [start, end). The cursor
+        // never selects such a group, but an empty list would still reach
+        // `_resolvePlannedTime` as `undefined` and travel into the C++ cast.
+        if (samples.length === 0) {
+            samples.push(group.start)
+        }
+        samples.sort((a, b) => a - b)
+        return samples
+    }
+
+    /**
+     * Evenly spaced render points for an animated (class C) event: at least
+     * `_classCSamplesMin`, at most `_classCSamplesMax`, never closer together
+     * than `_classCMinIntervalMs`. Both bounds are included.
+     * @param {Number} start
+     * @param {Number} end
+     * @returns {Array<Number>}
+     */
+    _buildAnimatedSamples (start, end) {
+        const out = []
+        const durationMs = Math.max((end - start) * 1000, 0)
+        const idealCount = Math.floor(durationMs / this._classCMinIntervalMs) + 1
+        const count = Math.max(
+            this._classCSamplesMin,
+            Math.min(this._classCSamplesMax, idealCount)
+        )
+        if (count <= 1 || end <= start) {
             out.push(start)
+        } else {
+            const step = (end - start) / (count - 1)
+            for (let i = 0; i < count; i++) {
+                out.push(Math.round((start + step * i) * 1000) / 1000)
+            }
         }
         return out
     }
@@ -745,8 +895,10 @@ export default class LibAss {
         while (this._planCursor > 0 && this._plans[this._planCursor - 1].end > time) {
             this._planCursor--
         }
+        // `end <= time` because a group covers [start, end); at `end` sharp it
+        // is already over and leaving it here avoids one stale frame.
         while (this._planCursor < this._plans.length &&
-               this._plans[this._planCursor].end < time) {
+               this._plans[this._planCursor].end <= time) {
             this._planCursor++
         }
         let plan = null
@@ -759,14 +911,18 @@ export default class LibAss {
         return plan
     }
 
+    /**
+     * Latest sample of the group at or before `time`. That sample is the last
+     * instant the visible set changed, so rendering there yields the frame
+     * `time` should be showing.
+     * @param {Number} time
+     * @param {EventPlan} plan
+     * @returns {Number}
+     */
     _resolvePlannedTime (time, plan) {
-        let planned = Math.round(time * 1000) / 1000
-        if (plan) {
-            let candidate = plan.samples[0]
-            for (let i = 0; i < plan.samples.length && plan.samples[i] <= time; i++) {
-                candidate = plan.samples[i]
-            }
-            planned = candidate
+        let planned = plan.samples[0]
+        for (let i = 0; i < plan.samples.length && plan.samples[i] <= time; i++) {
+            planned = plan.samples[i]
         }
         return planned
     }
@@ -863,13 +1019,36 @@ export default class LibAss {
         return bitmap
     }
 
+    /**
+     * Render `planned` and file it under `key`. Split out of
+     * {@link LibAss#_ensureCached} so a single promise can be handed to every
+     * caller waiting on the same key.
+     * @param {String} key
+     * @param {Number} planned
+     * @returns {Promise<RenderEntry>}
+     */
+    async _renderEntry (key, planned) {
+        const raw = await this._renderAt(planned)
+        const entry = await this._toEntry(raw)
+        this._renderCache.set(key, entry)
+        return entry
+    }
+
     async _ensureCached (planned, planIndex) {
         const key = this._buildRenderCacheKey(planned, planIndex)
         let entry = this._renderCache.get(key)
         if (!entry) {
-            const raw = await this._renderAt(planned)
-            entry = await this._toEntry(raw)
-            this._renderCache.set(key, entry)
+            // The idle prefetch and the frame callback reach for the same key
+            // routinely. Letting both through would render it twice, doubling
+            // the worker load and stranding one of the two bitmap sets.
+            let pending = this._inFlight.get(key)
+            if (!pending) {
+                pending = this._renderEntry(key, planned)
+                this._inFlight.set(key, pending)
+                // Drop the slot either way so a failed render can be retried.
+                pending.catch(() => {}).then(() => this._inFlight.delete(key))
+            }
+            entry = await pending
         }
         return entry
     }
@@ -888,43 +1067,66 @@ export default class LibAss {
         }
         this._currentTime = t
 
-        const plan = this._planForTime(t)
+        if (!this._destroyed) {
+            // Seek, pause and rVFC can all be in flight at once. Whoever draws
+            // must check it is still the newest, or a slow stale render lands
+            // last and sticks on screen as if it were current.
+            const token = ++this._renderToken
+            const plan = this._planForTime(t)
 
-        if (plan && plan.type === 'D') {
-            await this._renderLive(t)
-        } else {
-            await this._renderCached(t, plan)
+            if (plan && plan.type === 'D') {
+                await this._renderLive(t, token)
+            } else {
+                await this._renderCached(t, plan, token)
+            }
         }
     }
 
-    async _renderLive (time) {
+    async _renderLive (time, token) {
         this._log.debug('render live (D)', { time })
         const raw = await this._renderAt(time)
         const entry = await this._toEntry(raw)
-        this._drawRenderResult(entry)
+        if (token === this._renderToken) {
+            this._drawRenderResult(entry)
+            this._lastRenderKey = ''
+            this._lastRendered = null
+        }
         this._closeEntry(entry)
-        this._lastRenderKey = ''
-        this._lastRendered = null
     }
 
-    async _renderCached (time, plan) {
-        const planned = this._resolvePlannedTime(time, plan)
-        const planIndex = plan ? plan.index : -1
-        const key = this._buildRenderCacheKey(planned, planIndex)
+    async _renderCached (time, plan, token) {
+        let planned = 0
+        let key = EMPTY_RENDER_KEY
+        if (plan) {
+            planned = this._resolvePlannedTime(time, plan)
+            key = this._buildRenderCacheKey(planned, plan.index)
+        }
 
         if (key !== this._lastRenderKey || !this._lastRendered) {
-            const hit = this._renderCache.has(key)
-            this._log.debug(hit ? 'render hit' : 'render miss', {
-                time,
-                planIndex,
-                type: plan ? plan.type : 'none',
-                planned,
-            })
-            const entry = await this._ensureCached(planned, planIndex)
-            this._drawRenderResult(entry)
-            this._lastRenderKey = key
-            this._lastRendered = entry
-            this._schedulePrefetch(time)
+            if (plan) {
+                const hit = this._renderCache.has(key)
+                this._log.debug(hit ? 'render hit' : 'render miss', {
+                    time,
+                    planIndex: plan.index,
+                    type: plan.type,
+                    planned,
+                })
+                const entry = await this._ensureCached(planned, plan.index)
+                if (token === this._renderToken) {
+                    this._drawRenderResult(entry)
+                    this._lastRenderKey = key
+                    this._lastRendered = entry
+                    this._schedulePrefetch(time)
+                }
+            } else {
+                // No group covers `time`, so nothing can be on screen. Clearing
+                // here keeps the worker out of every gap between subtitles and
+                // gives the gap a stable key instead of one per frame.
+                this._log.debug('render empty', { time })
+                this._clearCanvas()
+                this._lastRenderKey = key
+                this._lastRendered = EMPTY_ENTRY
+            }
         }
     }
 
@@ -967,6 +1169,9 @@ export default class LibAss {
      */
     clearCache () {
         this._renderCache.clear()
+        // Renders still in flight belong to the geometry or the track being
+        // dropped; new callers must not attach to them.
+        this._inFlight.clear()
         this._lastRenderKey = ''
         this._lastRendered = null
     }
@@ -983,14 +1188,16 @@ export default class LibAss {
     }
 
     /**
-     * Warm the cache with the next `count` cacheable events from `fromTime`.
+     * Warm the cache with the next `count` cacheable samples from `fromTime`.
      * Resolves when those entries are in the cache, or when `timeoutMs` runs
      * out — whichever comes first. Meant to be awaited before starting
      * playback (initial load, seek) so the first sub doesn't miss.
      *
-     * Non-cacheable (D) events are skipped: they can't be pre-rendered, they
+     * Samples, not events: a group of overlapping events renders once per
+     * boundary, and those boundaries are what the first frames will ask for.
+     * Non-cacheable (D) groups are skipped: they can't be pre-rendered, they
      * always run live at frame time. If there are fewer than `count` cacheable
-     * events left after `fromTime`, resolves with what could be gathered.
+     * samples left after `fromTime`, resolves with what could be gathered.
      *
      * Uses direct `_ensureCached` calls (worker burst) instead of the idle
      * prefetch queue — the caller is blocking playback, idle scheduling would
@@ -1011,14 +1218,23 @@ export default class LibAss {
         while (cursor > 0 && this._plans[cursor - 1].end > t) {
             cursor--
         }
-        while (cursor < this._plans.length && this._plans[cursor].end < t) {
+        while (cursor < this._plans.length && this._plans[cursor].end <= t) {
             cursor++
         }
+        // When a group is already open, start at the sample covering `t` so the
+        // frame the caller is about to show is warmed too.
+        const open = cursor < this._plans.length && this._plans[cursor].start <= t
+        const from = open ? this._resolvePlannedTime(t, this._plans[cursor]) : t
+
         const targets = []
         while (cursor < this._plans.length && targets.length < n) {
             const plan = this._plans[cursor]
-            if (plan.type !== 'D' && plan.samples.length > 0) {
-                targets.push({ time: plan.samples[0], planIndex: plan.index })
+            if (plan.type !== 'D') {
+                for (let s = 0; s < plan.samples.length && targets.length < n; s++) {
+                    if (plan.samples[s] >= from) {
+                        targets.push({ time: plan.samples[s], planIndex: plan.index })
+                    }
+                }
             }
             cursor++
         }
@@ -1118,6 +1334,7 @@ export default class LibAss {
      */
     async destroy () {
         this._log.info('destroy')
+        this._destroyed = true
         if (this._video &&
             typeof this._video.cancelVideoFrameCallback === 'function' &&
             this._rvfcHandle != null) {

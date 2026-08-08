@@ -57,6 +57,36 @@ if (!('performance' in self)) {
 
 const log = createLogger('worker', () => state.debug)
 
+/** Emscripten announces an abort with this shape right before throwing. */
+const RE_ABORT = /^Aborted\(/
+
+/**
+ * Sink for everything libass writes to stderr.
+ *
+ * The severity is not recoverable here: libass's default handler formats the
+ * level away before printing, and the text carries no reliable marker. It
+ * emits the `[ass] ` prefix, the body and the newline through separate
+ * `fprintf` calls, so a line can arrive already split and bare; and words like
+ * "error" show up in conditions libass recovers from on its own, such as a
+ * font falling back. Guessing from the text only produces false alarms.
+ *
+ * So these go out as plain logs. An emscripten abort is the one thing that
+ * announces itself unambiguously, and it keeps the error level.
+ *
+ * Real failures do not depend on this: they reject the pending call and reach
+ * the host through `onError`.
+ *
+ * @param {String} text One stderr line.
+ */
+function printErr (text) {
+    const line = typeof text === 'string' ? text : String(text)
+    if (RE_ABORT.test(line)) {
+        console.error(line)
+    } else {
+        console.log(line)
+    }
+}
+
 /**
  * Resolve the emscripten module either from the ES6 factory (modern build)
  * or by evaluating the WASM2JS bundle inline (legacy build).
@@ -67,15 +97,7 @@ const log = createLogger('worker', () => state.debug)
 async function loadModule (data) {
     let module
     // #if process.env.JAS_TARGER === 'modern'
-    const modernOptions = {
-        printErr: (text) => {
-            if (typeof text === 'string' && text.startsWith('[ass]')) {
-                console.warn(text)
-            } else {
-                console.error(text)
-            }
-        },
-    }
+    const modernOptions = { printErr }
     if (data.wasmUrl) {
         // webOS TV doesn't ship fetch(). Load the .wasm bytes via XHR and
         modernOptions.wasm = await new Promise((resolve, reject) => {

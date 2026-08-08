@@ -9,7 +9,7 @@
  * @property {Number} [maxSize] max elements
  * @property {Number} [maxBytes] max bytes
  * @property {SizeFn} [size] function to get byte size
- * @property {Function} [onEviction] Called right before an item is evicted from the cache.
+ * @property {Function} [onEviction] Called right before a value leaves the cache, whether it was evicted, deleted or overwritten by a new `set` on the same key.
  */
 
 export default class LRUCache {
@@ -79,6 +79,11 @@ export default class LRUCache {
         if (this.cache.has(key)) {
             const entry = this.cache.get(key)
             this._bytes -= entry.size
+            // The replaced value leaves the cache just like an evicted one, so
+            // it needs the same hook or whatever it holds is never released.
+            if (typeof this.onEviction === 'function' && entry.value !== value) {
+                this.onEviction(key, entry.value)
+            }
             entry.value = value
             entry.size = newSize
             this._bytes += newSize
